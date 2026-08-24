@@ -2282,7 +2282,8 @@ const ts = require('./lib/trueStudio');
       remaining,
       limit,
       active: !!endsAt && Date.parse(endsAt) > Date.now() && (remaining === 0 || remaining == null),
-      source: 'discord-account',
+      source: cooldown?.source || 'discord-account',
+      discordCode: cooldown?.discordCode || null,
     };
   }
 
@@ -2330,7 +2331,10 @@ const ts = require('./lib/trueStudio');
       const rateLimiter = makeTsRateLimiter('nitro-status', null, { minimumGapMs: 900, account: email });
       const state = await enqueueTsAccount(email, () => readTsNitroState({ token, client, rateLimiter }), { label: 'Read Nitro status' });
       persistTsNitroState(email, state);
-      tsLog('info', `Nitro: تم تحديث الحالة — ${state.availableSlotIds.length} بوست متاح، cooldown ${state.cooldown.endsAt || 'غير موجود'}`, { operation: 'nitro_status', confirmed: true, stage: 'complete', account: email });
+      tsLog('info', `Nitro: تم تحديث الحالة — ${state.availableSlotIds.length} بوست متاح، cooldown ${state.cooldown.endsAt || 'غير موجود'}`, { operation: 'nitro_status', confirmed: true, stage: 'complete', account: email, cooldownSource: state.cooldown.source, discordCode: state.cooldown.discordCode || null });
+      if (state.cooldown.source === 'discord-no-active-cooldown') {
+        tsLog('info', 'Nitro: Discord أكد عدم وجود cooldown عام فعال؛ تم الاعتماد على cooldown الخاص بكل slot.', { operation: 'nitro_status', confirmed: true, stage: 'cooldown', account: email, discordCode: 10050 });
+      }
       ok(res, state);
     } catch (e) {
       tsLog('error', `Nitro: فشل قراءة الحالة — ${e.message || String(e)}`, { operation: 'nitro_status', confirmed: false, stage: 'failed', account: email });

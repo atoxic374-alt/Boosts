@@ -36,6 +36,8 @@ Before the Nitro account selector becomes available, the app runs a bulk preflig
 
 The **Change boost server** flow performs the complementary check: it lists only accounts with active boosts whose account and slot cooldowns have ended, verifies the target membership, and asks for confirmation before the side-effecting operation. A confirmed move releases the applied premium guild subscription, refreshes the slot state, applies the released slot to the target guild, and verifies the target assignment. If Discord accepts the release but rejects the re-application, the result is reported as partial so the operator can refresh the account state instead of blindly retrying.
 
+Discord may answer `GET /users/@me/guilds/premium/subscriptions/cooldown` with JSON code `10050` (`Unknown premium server subscribe cooldown`). The implementation treats this specific response as the documented empty account-level cooldown state, keeps HTTP 429 as a real rate limit, and continues checking each slot's `cooldown_ends_at` independently. The UI records the source of the cooldown result so an operator can distinguish `no active cooldown` from an actual read failure.
+
 ## Security
 
 Account credentials are encrypted at rest using AES-256-GCM. Every secret gets a fresh random IV and authentication tag. Records are stored as an encrypted envelope such as `v1:<iv>:<tag>:<ciphertext>`; plaintext records remain readable only for one-way migration when a write occurs.

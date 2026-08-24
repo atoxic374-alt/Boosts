@@ -885,6 +885,7 @@ export class TrueStudioManager {
         <div><strong>${escapeHtml(t('ts.nitro_cooldown_label'))}</strong><span class="ts-nitro-status-${statusClass}">${this.nitroStateError ? escapeHtml(this.nitroStateError) : (cooldownActive ? escapeHtml(t('ts.nitro_cooldown_active')) : escapeHtml(t('ts.nitro_cooldown_ready')))}</span></div>
       </div>
       <div class="ts-nitro-cooldown-row"><span>${escapeHtml(t('ts.nitro_cooldown_ends'))}: <b id="ts-nitro-cooldown-ends">${escapeHtml(cooldownEnds)}</b></span><span>${escapeHtml(t('ts.nitro_time_left'))}: <b id="ts-nitro-cooldown-remaining">${cooldownActive ? this._fmtNitroRemaining(Math.max(0, Date.parse(cooldownAt) - Date.now())) : '0s'}</b></span></div>
+      ${cooldown?.source === 'discord-no-active-cooldown' ? `<div class="ts-field-hint ok">${escapeHtml(t('ts.nitro_cooldown_discord_none') || 'Discord أكد عدم وجود cooldown عام فعال؛ تم فحص cooldown لكل slot.')}</div>` : ''}
       <div class="ts-nitro-post-fields">
         <div class="ts-field ts-nitro-account-field"><div class="ts-field-label">${escapeHtml(t('ts.nitro_accounts_label'))}</div>
           <select id="ts-nitro-accounts" class="ts-input ts-nitro-accounts-select" multiple size="${Math.min(6, Math.max(3, visibleAccounts.length || 3))}" ${this.nitroPreflightLoading || !preflightReady ? 'disabled' : ''}>${accountOptions || `<option disabled>${escapeHtml(t('ts.nitro_no_ready_accounts') || 'لا توجد حسابات جاهزة بعد')}</option>`}</select>

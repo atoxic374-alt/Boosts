@@ -1,5 +1,5 @@
 const assert = require('assert');
-const { rateLimitInfoFromResponse, createRateLimitGuard, deletePremiumGuildSubscription } = require('../lib/trueStudio');
+const { rateLimitInfoFromResponse, createRateLimitGuard, deletePremiumGuildSubscription, isNoActivePremiumGuildSubscriptionCooldown } = require('../lib/trueStudio');
 
 const route = rateLimitInfoFromResponse({
   status: 429,
@@ -40,6 +40,11 @@ const ambiguous = rateLimitInfoFromResponse({ status: 429, headers: {}, data: {}
 assert.equal(ambiguous.exhausted, true);
 assert.equal(ambiguous.global, false, 'ambiguous 429 must not be treated as global');
 assert.equal(ambiguous.waitMs, 1000, 'ambiguous 429 keeps a minimum safe wait');
+
+assert.equal(isNoActivePremiumGuildSubscriptionCooldown({ status: 400, data: { code: 10050, message: 'Unknown premium server subscribe cooldown' } }), true, 'Discord code 10050 is an empty cooldown state');
+assert.equal(isNoActivePremiumGuildSubscriptionCooldown({ status: 400, data: { message: 'Unknown premium server subscribe cooldown' } }), true, 'Discord cooldown sentinel message is recognized');
+assert.equal(isNoActivePremiumGuildSubscriptionCooldown({ status: 429, data: { code: 10050 } }), false, '429 must remain a rate-limit response');
+assert.equal(isNoActivePremiumGuildSubscriptionCooldown({ status: 400, data: { code: 10001, message: 'Unknown account' } }), false, 'unrelated Discord errors remain fatal');
 
 const guard = createRateLimitGuard({ label: 'logic-test', safetyMs: 0 });
 const guarded = guard.after({
