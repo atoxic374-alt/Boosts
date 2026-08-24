@@ -28,4 +28,14 @@ The Nitro cooldown display uses the account response from Discord. It does not f
 
 ## Security
 
-Account credentials are encrypted at rest using the existing `MASTER_KEY` / local master-key mechanism. Tokens must never be placed in logs, screenshots, commits, or issue reports.
+Account credentials are encrypted at rest using AES-256-GCM. Every secret gets a fresh random IV and authentication tag. Records are stored as an encrypted envelope such as `v1:<iv>:<tag>:<ciphertext>`; plaintext records remain readable only for one-way migration when a write occurs.
+
+For deployments, set `MASTER_KEY` to exactly 64 hexadecimal characters and keep it in a secret manager or protected environment variable. If `MASTER_KEY` is not set, Boosts creates `data/.master_key` with file mode `600` on first run. Back up that key separately: losing it makes the encrypted records unrecoverable. If an existing key is malformed, the application fails closed instead of replacing it.
+
+Tokens must never be placed in logs, screenshots, commits, or issue reports. The public account API exposes only metadata such as `hasDirectToken`, never the token itself.
+
+Run the local crypto regression test with:
+
+```bash
+pnpm test:crypto
+```

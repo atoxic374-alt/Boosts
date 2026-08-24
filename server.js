@@ -112,14 +112,31 @@ function ensureData() {
   if (typeof d.tsBulkTokenCounter !== 'number') { d.tsBulkTokenCounter = 0; changed = true; }
   if (!Array.isArray(d.tsProfiles)) { d.tsProfiles = []; changed = true; }
   if (typeof d.tsLastSession === 'undefined') { d.tsLastSession = null; changed = true; }
+  if (Array.isArray(d.tsAccounts)) {
+    for (const account of d.tsAccounts) {
+      if (!account || typeof account !== 'object') continue;
+      for (const field of ['password', 'totpSecret', 'directToken']) {
+        if (typeof account[field] === 'string' && account[field] && !isEncrypted(account[field])) {
+          account[field] = encrypt(account[field]);
+          changed = true;
+        }
+      }
+    }
+  }
   if (changed) dataStore.touch();
   return d;
 }
 ensureData();
 
 function ok(res, payload = {}) { res.json({ success: true, ...payload }); }
+function redactSecretText(value) {
+  return String(value == null ? '' : value)
+    .replace(/(authorization|token|password|totp[_-]?secret|captcha[_-]?(?:key|rqtoken|rqdata))([\s:=]+)([^,;\s}]+)/gi, '$1$2[REDACTED]')
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, 'Bearer [REDACTED]')
+    .slice(0, 500);
+}
 function fail(res, err) {
-  const msg = err?.response?.data?.message || err?.message || String(err);
+  const msg = redactSecretText(err?.response?.data?.message || err?.message || String(err));
   res.json({ success: false, error: msg });
 }
 function dataUrlSizeBytes(dataUrl) {
