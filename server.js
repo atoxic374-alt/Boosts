@@ -2337,6 +2337,104 @@ const ts = require('./lib/trueStudio');
     }
   });
 
+  app.post('/api/ts/nitro/preflight', async (req, res) => {
+    const hasExplicitEmails = Object.prototype.hasOwnProperty.call(req.body || {}, 'emails');
+    const requestedEmails = hasExplicitEmails
+      ? (Array.isArray(req.body?.emails) ? req.body.emails : [])
+      : tsAccountsPublic().map(account => account.email);
+    const emails = [...new Set(requestedEmails
+      .map(value => String(value || '').trim().toLowerCase())
+      .filter(email => tsFindAccount(email)))].slice(0, 100);
+    const requestedCount = Math.max(1, Math.min(2, Number(req.body?.count) || 1));
+    if (!emails.length) return fail(res, new Error('لا توجد حسابات لفحص Nitro'));
+
+    const results = new Array(emails.length);
+    let cursor = 0;
+    const worker = async () => {
+      while (true) {
+        const index = cursor++;
+        if (index >= emails.length) return;
+        const email = emails[index];
+        const displayName = tsAccountDisplayName(email, index);
+        const accountLabel = `#${index + 1}/${emails.length} · ${displayName}`;
+        const startedAt = Date.now();
+        const log = (level, stage, message, extra = {}) => tsLog(level, `[Nitro][${accountLabel}][preflight:${stage}] ${message}`, {
+          operation: 'nitro_preflight', confirmed: false, stage, account: email, position: index + 1, total: emails.length, ...extra,
+        });
+        try {
+          log('info', 'start', 'بدء فحص جاهزية الحساب');
+          const { token, client } = await tsGetToken(email);
+          const rateLimiter = makeTsRateLimiter('nitro-preflight', ({ type, waitMs, reason }) => {
+            if (type === 'rate_limit_wait') log('warn', 'rate_limit', `انتظار ${Math.max(1, Math.ceil(Number(waitMs || 0) / 1000))}s (${reason || 'Discord'})`);
+            if (type === 'rate_limit_resume') log('info', 'rate_limit_resume', 'استئناف الفحص');
+          }, { minimumGapMs: 900, account: email });
+          const health = await withTsRateRetry(`${accountLabel} health`, () => enqueueTsAccount(email, () => ts.accountHealthProbe({
+            token, netOpts: { client, rateLimiter },
+          }), { label: 'Nitro preflight health' }), { attempts: 2, minWaitMs: 1000 });
+          if (!health?.ready) {
+            const error = new Error(health?.message || 'الحساب غير صالح للتنفيذ');
+            error.code = health?.classification || 'ACCOUNT_NOT_READY';
+            error.retryAfter = health?.retryAfter || 0;
+            error.rateLimit = health?.rateLimit || null;
+            throw error;
+          }
+          const state = await withTsRateRetry(`${accountLabel} Nitro status`, () => enqueueTsAccount(email, () => readTsNitroState({ token, client, rateLimiter }), { label: 'Nitro preflight status' }), { attempts: 2, minWaitMs: 1000 });
+          persistTsNitroState(email, state);
+          const futureCooldown = state.nextSlotCooldownAt && Date.parse(state.nextSlotCooldownAt) > Date.now() ? state.nextSlotCooldownAt : null;
+          const activeBoosts = Array.isArray(state.boostedGuilds) ? state.boostedGuilds : [];
+          const availableSlots = Array.isArray(state.availableSlotIds) ? state.availableSlotIds.length : 0;
+          let status = 'ready';
+          let reason = 'جاهز للبوست';
+          if (activeBoosts.length) {
+            status = 'boosted';
+            reason = `مستبعد: لديه بوست مفعل على ${activeBoosts.map(g => g.name).join('، ')}`;
+          } else if (state.cooldown?.active || futureCooldown) {
+            status = 'cooldown';
+            reason = `مستبعد: cooldown حتى ${state.cooldown?.endsAt || futureCooldown}`;
+          } else if (!Array.isArray(state.slots) || state.slots.length === 0) {
+            status = 'no_nitro';
+            reason = 'مستبعد: لا يوجد Nitro أو لا توجد slots';
+          } else if (availableSlots < requestedCount) {
+            status = 'insufficient_slots';
+            reason = `مستبعد: المتاح ${availableSlots} slot والمطلوب ${requestedCount}`;
+          }
+          const ready = status === 'ready';
+          log(ready ? 'success' : 'info', status, reason, { confirmed: ready, availableSlots, activeBoosts: activeBoosts.length });
+          results[index] = {
+            index, email, displayName, ready, status, reason, availableSlots,
+            totalSlots: Array.isArray(state.slots) ? state.slots.length : 0,
+            appliedSlots: Array.isArray(state.slots) ? state.slots.filter(slot => slot.applied).length : 0,
+            boostedGuilds: activeBoosts,
+            cooldown: state.cooldown || null,
+            nextSlotCooldownAt: state.nextSlotCooldownAt || null,
+            state,
+            durationMs: Date.now() - startedAt,
+          };
+        } catch (e) {
+          const cloudflareBlocked = isCloudflareBlock(e);
+          const rateLimited = isRateLimitedError(e) && !cloudflareBlocked;
+          const status = cloudflareBlocked ? 'cloudflare_block' : rateLimited ? 'rate_limited' : (e?.code || 'not_ready');
+          const reason = redactSecretText(e?.message || String(e)).slice(0, 300);
+          log(rateLimited ? 'warn' : 'error', status, reason, { rateLimited, cloudflareBlocked });
+          results[index] = {
+            index, email, displayName, ready: false, status, reason,
+            availableSlots: 0, totalSlots: 0, appliedSlots: 0, boostedGuilds: [],
+            rateLimited, cloudflareBlocked, retryAt: rateLimited ? new Date(Date.now() + retryAfterMs(e, 30_000)).toISOString() : null,
+            durationMs: Date.now() - startedAt,
+          };
+        }
+      }
+    };
+    const parallelism = nitroParallelism(req.body?.parallelism, emails.length);
+    await Promise.all(Array.from({ length: parallelism }, worker));
+    const ready = results.filter(result => result?.ready === true);
+    const excluded = results.filter(result => result?.ready !== true);
+    tsLog('info', `[Nitro][preflight][complete] جاهز ${ready.length}/${emails.length}، مستبعد ${excluded.length}`, {
+      operation: 'nitro_preflight', confirmed: true, stage: 'completed', accounts: emails.length, ready: ready.length, excluded: excluded.length, parallelism,
+    });
+    ok(res, { total: emails.length, ready: ready.length, excluded: excluded.length, parallelism, results, accounts: tsAccountsPublic() });
+  });
+
   async function executeTsNitroPost(email, { guildId = '', inviteUrl = '', count = 1, months = null } = {}, logContext = {}) {
     const accountEmail = String(email || '').trim().toLowerCase();
     const requestedCount = Math.max(1, Math.min(2, Number(count) || 1));

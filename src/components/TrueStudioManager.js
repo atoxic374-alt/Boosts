@@ -89,6 +89,10 @@ export class TrueStudioManager {
     this.nitroPostOpen = false;
     this.nitroState = null;
     this.nitroStateError = '';
+    this.nitroPreflight = null;
+    this.nitroPreflightLoading = false;
+    this.nitroPreflightError = '';
+    this.nitroShowExcluded = false;
     this.nitroSelectedGuildId = '';
     this.nitroInviteUrl = '';
     this.nitroPostCount = 1;
@@ -789,12 +793,30 @@ export class TrueStudioManager {
     const statusClass = this.nitroStateError ? 'warn' : (cooldownActive ? 'warn' : 'ok');
     const cooldownEnds = cooldownAt ? new Date(cooldownAt).toLocaleString('ar-SA') : t('ts.nitro_cooldown_none');
     const selectedEmails = this._getNitroSelectedEmails();
-    const accountOptions = (this.accounts || []).filter(account => account.email).map(account => {
+    const preflightResults = Array.isArray(this.nitroPreflight?.results) ? this.nitroPreflight.results : [];
+    const preflightByEmail = new Map(preflightResults.map(result => [String(result.email || '').toLowerCase(), result]));
+    const preflightReady = !!this.nitroPreflight && !this.nitroPreflightLoading && !this.nitroPreflightError;
+    const visibleAccounts = (this.accounts || []).filter(account => {
+      const email = String(account.email || '').trim().toLowerCase();
+      return preflightReady && email && preflightByEmail.get(email)?.ready === true;
+    });
+    const accountOptions = visibleAccounts.map(account => {
       const email = String(account.email).trim().toLowerCase();
-      const label = account.username ? `${account.username} · ${email}` : email;
-      return `<option value="${escapeAttr(email)}" ${selectedEmails.includes(email) ? 'selected' : ''}>${escapeHtml(label)}</option>`;
+      const result = preflightByEmail.get(email);
+      const slots = result?.availableSlots ?? '—';
+      const label = account.displayName || account.username || t('ts.account_fallback_name');
+      return `<option value="${escapeAttr(email)}" ${selectedEmails.includes(email) ? 'selected' : ''}>${escapeHtml(label)} · ${escapeHtml(t('ts.nitro_ready_slots') || 'جاهز')} ${escapeHtml(String(slots))}</option>`;
     }).join('');
-    const canSubmit = selectedEmails.length > 1 || (selectedEmails.length === 1 && state && !this.nitroStateError);
+    const excludedResults = preflightResults.filter(result => result.ready !== true);
+    const preflightSummary = this.nitroPreflightLoading
+      ? `<div class="ts-nitro-preflight-summary warn">${escapeHtml(t('ts.nitro_preflight_loading') || 'جارٍ فحص جاهزية الحسابات…')}</div>`
+      : this.nitroPreflightError
+        ? `<div class="ts-nitro-preflight-summary warn">${escapeHtml(this.nitroPreflightError)}</div>`
+          : this.nitroPreflight
+          ? `<div class="ts-nitro-preflight-summary ${visibleAccounts.length ? 'ok' : 'warn'}">${escapeHtml(t('ts.nitro_preflight_summary') || 'الجاهز')} ${visibleAccounts.length} · ${escapeHtml(t('ts.nitro_preflight_excluded') || 'المستبعد')} ${excludedResults.length}${excludedResults.length ? ` · <button type="button" class="ts-link-btn" id="ts-nitro-show-excluded">${escapeHtml(t('ts.nitro_show_excluded') || 'عرض أسباب الاستبعاد')}</button>` : ''}</div>${this.nitroShowExcluded ? `<div class="ts-nitro-excluded-list">${excludedResults.map(result => `<div><b>${escapeHtml(result.displayName || t('ts.account_fallback_name'))}</b><span>${escapeHtml(result.reason || result.status || '')}</span></div>`).join('')}</div>` : ''}`
+          : '';
+    const readySelectedEmails = selectedEmails.filter(email => preflightByEmail.get(email)?.ready === true);
+    const canSubmit = preflightReady && readySelectedEmails.length > 0 && (readySelectedEmails.length > 1 || (readySelectedEmails.length === 1 && state && !this.nitroStateError));
     return `<div class="ts-card ts-nitro-post-card" id="ts-nitro-post-card">
       <div class="ts-card-head">
         <div class="ts-card-title ar">${escapeHtml(t('ts.nitro_post_title'))}</div>
@@ -807,8 +829,9 @@ export class TrueStudioManager {
       <div class="ts-nitro-cooldown-row"><span>${escapeHtml(t('ts.nitro_cooldown_ends'))}: <b id="ts-nitro-cooldown-ends">${escapeHtml(cooldownEnds)}</b></span><span>${escapeHtml(t('ts.nitro_time_left'))}: <b id="ts-nitro-cooldown-remaining">${cooldownActive ? this._fmtNitroRemaining(Math.max(0, Date.parse(cooldownAt) - Date.now())) : '0s'}</b></span></div>
       <div class="ts-nitro-post-fields">
         <div class="ts-field ts-nitro-account-field"><div class="ts-field-label">${escapeHtml(t('ts.nitro_accounts_label'))}</div>
-          <select id="ts-nitro-accounts" class="ts-input ts-nitro-accounts-select" multiple size="${Math.min(6, Math.max(3, (this.accounts || []).length))}">${accountOptions}</select>
+          <select id="ts-nitro-accounts" class="ts-input ts-nitro-accounts-select" multiple size="${Math.min(6, Math.max(3, visibleAccounts.length || 3))}" ${this.nitroPreflightLoading || !preflightReady ? 'disabled' : ''}>${accountOptions || `<option disabled>${escapeHtml(t('ts.nitro_no_ready_accounts') || 'لا توجد حسابات جاهزة بعد')}</option>`}</select>
           <div class="ts-field-hint">${escapeHtml(t('ts.nitro_accounts_hint'))}</div>
+          ${preflightSummary}
         </div>
         <div class="ts-field"><div class="ts-field-label">${escapeHtml(t('ts.nitro_parallelism_label'))}</div>
           <select id="ts-nitro-parallelism" class="ts-input">${Array.from({ length: Math.min(10, Math.max(1, (this.accounts || []).length)) }, (_, index) => index + 1).map(value => `<option value="${value}" ${value === Math.min(10, Math.max(1, Number(this.nitroParallelism) || 3)) ? 'selected' : ''}>${value}</option>`).join('')}</select>
@@ -4397,10 +4420,11 @@ export class TrueStudioManager {
       this.nitroPostResult = null;
       this.render();
     });
-    $('#ts-nitro-refresh')?.addEventListener('click', () => this.loadNitroState());
+    $('#ts-nitro-refresh')?.addEventListener('click', () => this.loadNitroPreflight());
+    $('#ts-nitro-show-excluded')?.addEventListener('click', () => { this.nitroShowExcluded = !this.nitroShowExcluded; this.render(); });
     $('#ts-nitro-guild')?.addEventListener('change', (e) => { this.nitroSelectedGuildId = e.target.value; this.nitroInviteUrl = ''; this.render(); });
     $('#ts-nitro-invite')?.addEventListener('input', (e) => { this.nitroInviteUrl = e.target.value; if (e.target.value.trim()) { this.nitroSelectedGuildId = ''; } });
-    $('#ts-nitro-count')?.addEventListener('change', (e) => { this.nitroPostCount = Math.max(1, Math.min(2, Number(e.target.value) || 1)); });
+    $('#ts-nitro-count')?.addEventListener('change', (e) => { this.nitroPostCount = Math.max(1, Math.min(2, Number(e.target.value) || 1)); this.loadNitroPreflight(); });
     $('#ts-nitro-package-months')?.addEventListener('change', (e) => {
       this.nitroPackageMonths = Math.min(36, Math.max(1, Number(e.target.value) || 1));
       this.nitroPackageMonthsTouched = true;
@@ -4735,6 +4759,9 @@ export class TrueStudioManager {
     this.nitroPostOpen = true;
     this.nitroState = null;
     this.nitroStateError = '';
+    this.nitroPreflight = null;
+    this.nitroPreflightLoading = true;
+    this.nitroPreflightError = '';
     this.nitroSelectedEmails = this._getNitroSelectedEmails().length ? this._getNitroSelectedEmails() : [String(this.selectedEmail).toLowerCase()];
     if (!this.nitroPackageMonthsTouched) {
       const plans = this._getNitroSelectedEmails().map(email => this.accounts.find(a => String(a.email || '').toLowerCase() === email)?.nitroPlanMonths).filter(Boolean);
@@ -4743,7 +4770,29 @@ export class TrueStudioManager {
     this.nitroBulkResults = [];
     this.nitroPostResult = null;
     this.render();
-    await this.loadNitroState();
+    await Promise.all([this.loadNitroState(), this.loadNitroPreflight()]);
+  }
+
+  async loadNitroPreflight() {
+    const emails = this.accounts.map(account => account.email).filter(Boolean);
+    if (!emails.length) return;
+    this.nitroPreflightLoading = true;
+    this.nitroPreflightError = '';
+    this.render();
+    try {
+      const r = await window.electronAPI.tsNitroPreflight(emails, this.nitroPostCount, this.nitroParallelism);
+      if (!r?.success) throw new Error(r?.error || t('ts.nitro_preflight_failed') || 'تعذر فحص جاهزية الحسابات');
+      this.nitroPreflight = r;
+      this.nitroSelectedEmails = this.nitroSelectedEmails.filter(email => r.results?.some(result => result.email === email && result.ready === true));
+      const selectedResult = r.results?.find(result => result.email === String(this.selectedEmail || '').toLowerCase() && result.state);
+      if (selectedResult?.state) this.nitroState = selectedResult.state;
+    } catch (e) {
+      this.nitroPreflight = null;
+      this.nitroPreflightError = e.message || t('ts.nitro_preflight_failed') || 'تعذر فحص جاهزية الحسابات';
+    } finally {
+      this.nitroPreflightLoading = false;
+      this.render();
+    }
   }
 
   async loadNitroState() {
@@ -4765,7 +4814,10 @@ export class TrueStudioManager {
 
   async submitNitroPost() {
     const emails = this._getNitroSelectedEmails();
+    if (!this.nitroPreflight || this.nitroPreflightLoading) return showNotification(t('ts.nitro_preflight_loading') || 'انتظر اكتمال فحص الجاهزية', 'warn');
     if (!emails.length) return showNotification(t('ts.nitro_accounts_required'), 'error');
+    const readyEmails = new Set((this.nitroPreflight.results || []).filter(result => result.ready === true).map(result => String(result.email || '').toLowerCase()));
+    if (emails.some(email => !readyEmails.has(String(email).toLowerCase()))) return showNotification(t('ts.nitro_preflight_failed') || 'توجد حسابات غير جاهزة للبوست', 'error');
     const guildId = this.nitroSelectedGuildId || '';
     const inviteUrl = (this.nitroInviteUrl || '').trim();
     if (!guildId && !inviteUrl) return showNotification(t('ts.nitro_target_required'), 'error');

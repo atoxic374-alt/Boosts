@@ -58,6 +58,12 @@ async function json(path, options) {
   });
   assert.equal(missingNitroBulkEmails.body?.success, false, 'Bulk Nitro post without accounts should fail safely');
 
+  const emptyNitroPreflight = await json('/api/ts/nitro/preflight', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ emails: [], count: 2, parallelism: 3 }),
+  });
+  assert.equal(emptyNitroPreflight.body?.success, false, 'Nitro preflight without accounts should fail safely');
+
   const bulkTokens = await json('/api/ts/accounts/bulk-tokens', {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ tokens: ['smoke-bulk-token-duration-1234567890'], months: 3 }),

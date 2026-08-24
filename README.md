@@ -32,6 +32,8 @@ Open **Nitro Boosts**, select multiple saved accounts in the **Accounts to use**
 
 When importing numbered tokens, choose a Nitro duration in the import card. That duration is saved with every imported account and shown next to the account selector. The Nitro posting flow uses the saved duration automatically; if selected accounts have different saved durations, each account receives its own duration. A manual duration selection in the Nitro card overrides the saved plan for that operation.
 
+Before the Nitro account selector becomes available, the app runs a bulk preflight across the saved accounts. Only accounts that pass the health check, have enough available Nitro slots for the requested boost count, have no active boost subscription, and have no active cooldown are shown as selectable. The card reports ready and excluded counts; exclusion reasons can be expanded for each account. The server repeats these checks at execution time so stale dashboard data cannot force a boost attempt on an ineligible account.
+
 ## Security
 
 Account credentials are encrypted at rest using AES-256-GCM. Every secret gets a fresh random IV and authentication tag. Records are stored as an encrypted envelope such as `v1:<iv>:<tag>:<ciphertext>`; plaintext records remain readable only for one-way migration when a write occurs.
