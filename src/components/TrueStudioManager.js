@@ -91,6 +91,11 @@ export class TrueStudioManager {
     this.nitroInviteUrl = '';
     this.nitroPostCount = 1;
     this.nitroPostResult = null;
+    this.dashboard = null;
+    this.dashboardFilter = 'all';
+    this.dashboardSelectedId = null;
+    this.dashboardLoading = false;
+    this.dashboardError = '';
     this._nitroTicker = null;
   }
 
@@ -114,6 +119,7 @@ export class TrueStudioManager {
       await this._loadPfp();
     }
     this.render();
+    this.loadDashboard();
     // If a captcha is already pending when this view opens, surface the modal.
     this._maybeOpenCaptchaModal();
   }
@@ -436,6 +442,7 @@ export class TrueStudioManager {
         </header>
         <section class="ts-category ts-category-accounts" id="ts-cat-accounts">
           <div class="ts-category-heading"><div><span class="ts-category-number">01</span><h2>${escapeHtml(t('ts.ui_accounts') || 'الحسابات')}</h2></div><p>${escapeHtml(t('ts.ui_accounts_desc') || 'الاتصال بالحسابات الموجودة وإدارة بوستات Nitro.')}</p></div>
+          ${this._renderDashboard()}
           <div class="ts-card ts-accounts-card"><div class="ts-card-head"><div class="ts-card-title ar">${escapeHtml(t('ts.accounts_section'))}</div><span class="ts-card-step">01 / CONNECT</span></div><div class="ts-field"><div class="ts-field-label">${escapeHtml(t('ts.active_account'))}</div><div class="ts-account-row"><button class="ts-btn danger" id="ts-acct-delete" ${sel ? '' : 'disabled'}>${escapeHtml(t('ts.delete'))}</button><button class="ts-btn mint" id="ts-acct-save">${escapeHtml(t('ts.connect_account'))}</button><select class="ts-select" id="ts-acct-select"><option value="">${escapeHtml(t('ts.choose_account'))}</option>${this.accounts.map(a => `<option value="${escapeAttr(a.email)}" ${a.email === this.selectedEmail ? 'selected' : ''}>${this._optionLabel(a)}</option>`).join('')}</select></div><div class="ts-account-row" style="margin-top:8px;"><button class="ts-btn" id="ts-acct-test" ${sel ? '' : 'disabled'}>${escapeHtml(t('ts.test_account'))}</button><button class="ts-btn" id="ts-acct-test-all" ${this.accounts.length ? '' : 'disabled'}>${escapeHtml(t('ts.test_all_accounts'))}</button><div></div><div id="ts-verify-info" class="ts-verify-info">${this._verifyLabel(sel)}</div></div>${this.accounts.length === 0 ? `<div class="ts-account-empty">${escapeHtml(t('ts.no_connected_accounts'))}</div>` : ''}</div></div>
           <div class="ts-card ts-credentials-card"><div class="ts-card-head"><div class="ts-card-title ar">${escapeHtml(t('ts.account_data'))}</div><span class="ts-card-step">02 / ACCESS</span></div><div class="ts-method-banner"><span class="ts-method-badge token">${escapeHtml(t('ts.method_a_badge'))}</span><span class="ts-method-hint">${escapeHtml(t('ts.method_a_hint'))}</span></div><div class="ts-field"><div class="ts-field-label">Discord User Token</div><input type="password" id="ts-direct-token" class="ts-input ltr" value="" placeholder="${sel?.hasDirectToken ? '•••••• ' + escapeAttr(t('ts.direct_token_saved_ph')) : escapeAttr(t('ts.direct_token_ph'))}" autocomplete="off" />${sel?.hasDirectToken ? `<div class="ts-field-hint ok">${escapeHtml(t('ts.direct_token_saved_hint'))}</div>` : `<div class="ts-field-hint">${escapeHtml(t('ts.direct_token_how'))}</div>`}</div><details class="ts-method-collapsible"><summary><span class="ts-method-badge email">${escapeHtml(t('ts.method_b_badge'))}</span><span class="ts-method-hint">${escapeHtml(t('ts.method_b_hint'))}</span></summary><div class="ts-form-grid ts-method-body"><div class="ts-field"><div class="ts-field-label">Email</div><input type="email" id="ts-email" class="ts-input ltr" value="${escapeAttr(this.form.email)}" autocomplete="off" /></div><div class="ts-field"><div class="ts-field-label">Password</div><input type="password" id="ts-password" class="ts-input ltr" value="" autocomplete="off" /></div><div class="ts-field"><div class="ts-field-label">2FA Secret</div><input type="text" id="ts-totp" class="ts-input totp" value="" autocomplete="off" /></div></div></details></div>
           <div class="ts-card ts-server-join-card"><div class="ts-card-head"><div class="ts-card-title ar">${escapeHtml(t('ts.join_server_title'))}</div><span class="ts-card-step">03 / SERVER</span></div><div class="ts-server-join-intro">${escapeHtml(t('ts.join_server_hint'))}</div><div class="ts-server-join-row"><div class="ts-field"><div class="ts-field-label">${escapeHtml(t('ts.server_invite_label'))}</div><input type="url" id="ts-server-invite" class="ts-input ltr" value="${escapeAttr(this.serverInviteUrl)}" placeholder="https://discord.gg/..." autocomplete="off" /></div><button class="ts-btn mint ts-server-join-btn" id="ts-server-join" ${this.selectedEmail ? '' : 'disabled'}>${escapeHtml(t('ts.join_server_button'))}</button></div><div class="ts-server-captcha-check"><div><strong>${escapeHtml(t('ts.join_server_captcha_title'))}</strong><span>${this._renderServerCaptchaCheck()}</span></div><button class="ts-btn ts-btn-xs" id="ts-server-captcha-check">${escapeHtml(t('ts.join_server_captcha_verify'))}</button></div><div id="ts-server-join-result" class="ts-server-join-result">${this._renderServerJoinResult()}</div></div>
@@ -712,6 +719,29 @@ export class TrueStudioManager {
       </div>
     `;
     this._bind();
+  }
+
+  _dashboardStatusLabel(status) {
+    const labels = { unchecked: 'غير مفحوص', verified: 'متصل', ok: 'متصل', invalid_token: 'توكن غير صالح', token_unusable: 'غير قابل للاستخدام', rate_limited: 'محدود مؤقتاً', global_rate_limited: 'محدود عالمياً', rate_limit_pending: 'ينتظر rate limit', forbidden: 'مرفوض', captcha_required: 'يحتاج CAPTCHA', network_error: 'خطأ شبكي' };
+    return labels[String(status || '')] || String(status || 'غير معروف');
+  }
+
+  _renderDashboard() {
+    const d = this.dashboard || {};
+    const c = d.counts || { total: 0, ok: 0, failed: 0, unchecked: 0, rateLimited: 0, cooldown: 0, withBoosts: 0, availableBoosts: 0 };
+    const accounts = Array.isArray(d.accounts) ? d.accounts : [];
+    const filtered = accounts.filter(a => this.dashboardFilter === 'all' || (this.dashboardFilter === 'ok' && a.ok) || (this.dashboardFilter === 'failed' && !a.ok && a.status !== 'unchecked') || (this.dashboardFilter === 'unchecked' && a.status === 'unchecked') || (this.dashboardFilter === 'boosts' && Number(a.nitro?.availableSlots) > 0) || (this.dashboardFilter === 'cooldown' && (a.nitro?.cooldown?.active || (a.nitro?.nextSlotCooldownAt && Date.parse(a.nitro.nextSlotCooldownAt) > Date.now()))));
+    const selected = accounts.find(a => a.id === this.dashboardSelectedId) || null;
+    const maxBoosts = Math.max(1, ...accounts.map(a => Number(a.nitro?.availableSlots) || 0));
+    const lastUpdated = d.generatedAt ? new Date(d.generatedAt).toLocaleString('ar-SA') : '—';
+    return `<section class="ts-dashboard" id="ts-dashboard">
+      <div class="ts-dashboard-head"><div><span class="ts-dashboard-kicker">ACCOUNT TELEMETRY</span><h3>${escapeHtml(t('ts.dashboard_title') || 'لوحة حالة الحسابات')}</h3><p>${escapeHtml(t('ts.dashboard_hint') || 'ملخص مباشر للاتصال وNitro والكول داون بدون عرض التوكنات.')}</p>${this.dashboardError ? `<div class="ts-dashboard-error">${escapeHtml(this.dashboardError)}</div>` : ''}</div><div class="ts-dashboard-actions"><span class="ts-dashboard-updated">${escapeHtml(t('ts.dashboard_updated') || 'آخر تحديث')}: ${escapeHtml(lastUpdated)}</span><button class="ts-btn ts-btn-xs" id="ts-dashboard-refresh">${escapeHtml(this.dashboardLoading ? 'جارٍ التحديث…' : (t('ts.dashboard_refresh') || 'تحديث'))}</button></div></div>
+      <div class="ts-dashboard-stats"><div><b>${c.total}</b><span>${escapeHtml(t('ts.dashboard_total') || 'الإجمالي')}</span></div><div class="good"><b>${c.ok}</b><span>${escapeHtml(t('ts.dashboard_ok') || 'متصل')}</span></div><div class="bad"><b>${c.failed}</b><span>${escapeHtml(t('ts.dashboard_failed') || 'فشل')}</span></div><div class="warn"><b>${c.rateLimited}</b><span>${escapeHtml(t('ts.dashboard_limited') || 'محدود')}</span></div><div><b>${c.availableBoosts}</b><span>${escapeHtml(t('ts.dashboard_boosts') || 'بوست متاح')}</span></div><div class="warn"><b>${c.cooldown}</b><span>${escapeHtml(t('ts.dashboard_cooldown') || 'Cooldown')}</span></div></div>
+      <div class="ts-dashboard-charts"><div class="ts-dashboard-chart ts-dashboard-donut"><div class="ts-dashboard-chart-title">${escapeHtml(t('ts.dashboard_status_chart') || 'توزيع الحالات')}</div><div class="ts-donut" style="--ok:${c.total ? Math.round(c.ok / c.total * 100) : 0}%;--failed:${c.total ? Math.round(c.failed / c.total * 100) : 0}%;"><span>${c.total}</span></div><div class="ts-dashboard-legend"><span><i class="ok"></i>${escapeHtml(t('ts.dashboard_ok') || 'متصل')} ${c.ok}</span><span><i class="bad"></i>${escapeHtml(t('ts.dashboard_failed') || 'فشل')} ${c.failed}</span><span><i class="neutral"></i>${escapeHtml(t('ts.dashboard_unchecked') || 'غير مفحوص')} ${c.unchecked}</span></div></div><div class="ts-dashboard-chart"><div class="ts-dashboard-chart-title">${escapeHtml(t('ts.dashboard_boost_chart') || 'البوستات المتاحة حسب الحساب')}</div><div class="ts-dashboard-bars">${accounts.slice(0, 12).map(a => `<div class="ts-dashboard-bar-row"><span title="${escapeAttr(a.label)}">${escapeHtml(a.label)}</span><i><b style="width:${Math.min(100, (Number(a.nitro?.availableSlots) || 0) / maxBoosts * 100)}%"></b></i><em>${Number(a.nitro?.availableSlots) || 0}</em></div>`).join('') || `<small>${escapeHtml(t('ts.dashboard_no_data') || 'لا توجد بيانات بعد')}</small>`}</div></div></div>
+      <div class="ts-dashboard-table-head"><strong>${escapeHtml(t('ts.dashboard_accounts') || 'تفاصيل الحسابات')}</strong><select id="ts-dashboard-filter" class="ts-input"><option value="all" ${this.dashboardFilter === 'all' ? 'selected' : ''}>الكل</option><option value="ok" ${this.dashboardFilter === 'ok' ? 'selected' : ''}>متصل</option><option value="failed" ${this.dashboardFilter === 'failed' ? 'selected' : ''}>فشل</option><option value="unchecked" ${this.dashboardFilter === 'unchecked' ? 'selected' : ''}>غير مفحوص</option><option value="boosts" ${this.dashboardFilter === 'boosts' ? 'selected' : ''}>لديه بوست</option><option value="cooldown" ${this.dashboardFilter === 'cooldown' ? 'selected' : ''}>Cooldown</option></select></div>
+      <div class="ts-dashboard-table"><div class="ts-dashboard-row ts-dashboard-row-head"><span>الحساب</span><span>الحالة</span><span>Nitro / Boosts</span><span>Cooldown</span><span>آخر فحص</span></div>${filtered.map(a => { const cd = a.nitro?.cooldown?.active ? a.nitro.cooldown.endsAt : a.nitro?.nextSlotCooldownAt; const left = cd && Date.parse(cd) > Date.now() ? this._fmtNitroRemaining(Date.parse(cd) - Date.now()) : 'جاهز'; return `<button class="ts-dashboard-row ${a.id === this.dashboardSelectedId ? 'selected' : ''}" data-dashboard-select="${escapeAttr(a.id)}"><span><b>${escapeHtml(a.label)}</b>${a.username ? `<small>${escapeHtml(a.username)}</small>` : ''}</span><span class="ts-dashboard-status ${a.ok ? 'ok' : (a.status === 'unchecked' ? 'neutral' : 'bad')}">${escapeHtml(this._dashboardStatusLabel(a.status))}</span><span>${a.nitro?.availableSlots == null ? '—' : `${a.nitro.availableSlots} / ${a.nitro.totalSlots ?? '—'}`}</span><span>${escapeHtml(left)}</span><span>${a.lastCheckedAt ? escapeHtml(new Date(a.lastCheckedAt).toLocaleString('ar-SA')) : '—'}</span></button>`; }).join('') || `<div class="ts-dashboard-empty">${escapeHtml(t('ts.dashboard_no_matches') || 'لا توجد حسابات مطابقة')}</div>`}</div>
+      ${selected ? `<div class="ts-dashboard-detail"><strong>${escapeHtml(selected.label)}</strong><span>${escapeHtml(selected.message || '—')}</span><span>User ID: ${escapeHtml(selected.userId || '—')}</span></div>` : ''}
+    </section>`;
   }
 
   _renderNitroPostCard() {
@@ -4284,6 +4314,12 @@ export class TrueStudioManager {
     $('#ts-nitro-invite')?.addEventListener('input', (e) => { this.nitroInviteUrl = e.target.value; if (e.target.value.trim()) { this.nitroSelectedGuildId = ''; } });
     $('#ts-nitro-count')?.addEventListener('change', (e) => { this.nitroPostCount = Math.max(1, Math.min(2, Number(e.target.value) || 1)); });
     $('#ts-nitro-post-submit')?.addEventListener('click', () => this.submitNitroPost());
+    $('#ts-dashboard-refresh')?.addEventListener('click', () => this.loadDashboard());
+    $('#ts-dashboard-filter')?.addEventListener('change', (e) => { this.dashboardFilter = e.target.value || 'all'; this.render(); });
+    this.contentArea.querySelectorAll('[data-dashboard-select]').forEach((row) => row.addEventListener('click', () => {
+      this.dashboardSelectedId = row.getAttribute('data-dashboard-select') || null;
+      this.render();
+    }));
 
     $('#ts-email')?.addEventListener('input', (e) => this.form.email = e.target.value.trim());
     $('#ts-password')?.addEventListener('input', (e) => this.form.password = e.target.value);
@@ -4572,6 +4608,24 @@ export class TrueStudioManager {
       await this.testAccount();
     } catch (e) {
       showNotification(e.message || 'Connection failed', 'error');
+    }
+  }
+
+  async loadDashboard() {
+    if (this.dashboardLoading) return;
+    this.dashboardLoading = true;
+    this.render();
+    try {
+      const r = await window.electronAPI.tsDashboard();
+      if (!r?.success) throw new Error(r?.error || 'تعذر تحميل لوحة الحسابات');
+      this.dashboard = r;
+      this.dashboardError = '';
+    } catch (e) {
+      this.dashboard = null;
+      this.dashboardError = e.message || 'تعذر تحميل لوحة الحسابات';
+    } finally {
+      this.dashboardLoading = false;
+      this.render();
     }
   }
 
@@ -4908,6 +4962,7 @@ export class TrueStudioManager {
       const result = await window.electronAPI.tsAccountsHealthCheck(emails);
       if (!result?.success) throw new Error(result?.error || 'فشل بدء فحص الحسابات');
       await this.refresh();
+      await this.loadDashboard();
       showNotification(`اكتمل الفحص: ${result.passed || 0} ناجح · ${result.failed || 0} يحتاج مراجعة`, result.failed ? 'warn' : 'success');
     } catch (e) {
       showNotification(e.message || 'فشل فحص الحسابات', 'error');

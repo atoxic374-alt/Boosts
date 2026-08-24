@@ -73,6 +73,7 @@ window.electronAPI = {
   openExternal: (url) => window.open(url, '_blank', 'noopener,noreferrer'),
 
   tsAccounts: () => apiCall('GET', '/api/ts/accounts'),
+  tsDashboard: () => apiCall('GET', '/api/ts/dashboard'),
   tsSaveAccount: (payload) => apiCall('POST', '/api/ts/accounts', payload),
   tsSaveBulkTokens: (tokens) => apiCall('POST', '/api/ts/accounts/bulk-tokens', { tokens }),
   tsDeleteBulkTokens: () => apiCall('DELETE', '/api/ts/accounts/bulk-tokens'),

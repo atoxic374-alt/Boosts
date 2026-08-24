@@ -1413,6 +1413,47 @@ const ts = require('./lib/trueStudio');
     ok(res, { removed });
   });
 
+  app.get('/api/ts/dashboard', (req, res) => {
+    try {
+      const accounts = tsAccountsRaw().map((a, index) => {
+        const verify = a.verify && typeof a.verify === 'object' ? a.verify : {};
+        const nitro = a.nitroStatus && typeof a.nitroStatus === 'object' ? a.nitroStatus : {};
+        const email = String(a.email || '').toLowerCase();
+        const status = String(verify.status || 'unchecked');
+        return {
+          id: `account-${index + 1}`,
+          label: isTsBulkTokenAccount(email) ? `account-${index + 1}` : email.replace(/^(.).*(?=@)/, '$1***'),
+          status,
+          ok: verify.ok === true,
+          lastCheckedAt: verify.at || null,
+          message: redactSecretText(verify.message || '').slice(0, 240),
+          username: String(verify.username || '').slice(0, 80),
+          userId: String(verify.userId || '').slice(0, 32),
+          nitro: {
+            totalSlots: Number.isFinite(Number(nitro.totalSlots)) ? Number(nitro.totalSlots) : null,
+            availableSlots: Number.isFinite(Number(nitro.availableSlots)) ? Number(nitro.availableSlots) : null,
+            appliedSlots: Number.isFinite(Number(nitro.appliedSlots)) ? Number(nitro.appliedSlots) : null,
+            cooldown: nitro.cooldown || null,
+            nextSlotCooldownAt: nitro.nextSlotCooldownAt || null,
+            fetchedAt: nitro.fetchedAt || null,
+          },
+        };
+      });
+      const counts = accounts.reduce((acc, account) => {
+        acc.total += 1;
+        if (account.ok) acc.ok += 1;
+        if (account.status === 'unchecked') acc.unchecked += 1;
+        if (!account.ok && account.status !== 'unchecked') acc.failed += 1;
+        if (account.status === 'rate_limited' || account.status === 'global_rate_limited' || account.status === 'rate_limit_pending') acc.rateLimited += 1;
+        if (account.nitro.cooldown?.active || (account.nitro.nextSlotCooldownAt && Date.parse(account.nitro.nextSlotCooldownAt) > Date.now())) acc.cooldown += 1;
+        if (Number(account.nitro.availableSlots) > 0) acc.withBoosts += 1;
+        acc.availableBoosts += Number(account.nitro.availableSlots) || 0;
+        return acc;
+      }, { total: 0, ok: 0, failed: 0, unchecked: 0, rateLimited: 0, cooldown: 0, withBoosts: 0, availableBoosts: 0 });
+      ok(res, { generatedAt: new Date().toISOString(), counts, accounts });
+    } catch (e) { fail(res, e); }
+  });
+
   app.post('/api/ts/accounts/health-check', async (req, res) => {
     const requested = Array.isArray(req.body?.emails) ? req.body.emails : tsAccountsPublic().map(a => a.email);
     const emails = [...new Set(requested.map(v => String(v || '').trim().toLowerCase()).filter(Boolean))].slice(0, 100);
@@ -1446,6 +1487,18 @@ const ts = require('./lib/trueStudio');
             };
           }, { label: 'Account health check' });
           const result = { index, email, ...value, durationMs: Date.now() - startedAt };
+          const d = ensureData();
+          const rec = tsFindAccount(email);
+          if (rec) {
+            rec.verify = {
+              ...(rec.verify || {}),
+              ok: result.ok === true,
+              status: result.status,
+              message: result.message,
+              at: Date.now(),
+            };
+            writeData(d);
+          }
           results.push(result);
           tsLog(result.ok ? 'success' : 'warn', `Health Check: ${email} — ${result.status}`, {
             operation: 'account_health_check', stage: 'complete', confirmed: result.ok, jobId, account: email, status: result.status, durationMs: result.durationMs,
@@ -2022,6 +2075,19 @@ const ts = require('./lib/trueStudio');
       const { token, client } = await tsGetToken(email);
       const rateLimiter = makeTsRateLimiter('nitro-status', null, { minimumGapMs: 900, account: email });
       const state = await enqueueTsAccount(email, () => readTsNitroState({ token, client, rateLimiter }), { label: 'Read Nitro status' });
+      const d = ensureData();
+      const rec = tsFindAccount(email);
+      if (rec) {
+        rec.nitroStatus = {
+          totalSlots: state.slots.length,
+          availableSlots: state.availableSlotIds.length,
+          appliedSlots: state.slots.filter(slot => slot.applied).length,
+          cooldown: state.cooldown,
+          nextSlotCooldownAt: state.nextSlotCooldownAt,
+          fetchedAt: state.fetchedAt,
+        };
+        writeData(d);
+      }
       tsLog('info', `Nitro: تم تحديث الحالة — ${state.availableSlotIds.length} بوست متاح، cooldown ${state.cooldown.endsAt || 'غير موجود'}`, { operation: 'nitro_status', confirmed: true, stage: 'complete', account: email });
       ok(res, state);
     } catch (e) {
