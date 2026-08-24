@@ -28,7 +28,7 @@ The Nitro cooldown display uses the account response from Discord. It does not f
 
 ### Multi-account Nitro posting
 
-Open **Nitro Boosts**, select multiple saved accounts in the **Accounts to use** list with Ctrl/Cmd-click, then choose the target server or invite and submit. Selected accounts are processed concurrently with a maximum of three workers. Each account still uses its own serialized queue and rate limiter, and the result panel reports completion and verification per account. The original single-account endpoint remains available at `/api/ts/nitro/post`; the multi-account endpoint is `/api/ts/nitro/post-bulk`.
+Open **Nitro Boosts**, select multiple saved accounts in the **Accounts to use** list with Ctrl/Cmd-click, choose the number of parallel accounts from 1 to 10, then choose the target server or invite and submit. Each account still uses its own serialized queue and rate limiter. Rate-limited requests are retried safely when Discord provides a retry interval; if the limit persists, that account is reported separately with its retry time while the other accounts continue. The live log uses `[Nitro][account][stage]` entries for clear per-account tracking. The original single-account endpoint remains available at `/api/ts/nitro/post`; the multi-account endpoint is `/api/ts/nitro/post-bulk`.
 
 ## Security
 

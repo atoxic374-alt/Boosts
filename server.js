@@ -549,7 +549,7 @@ const ts = require('./lib/trueStudio');
         return await fn(attempt);
       } catch (e) {
         lastErr = e;
-        if (!idempotent || !isRateLimitedError(e) || attempt >= attempts) throw e;
+        if (!idempotent || !isRateLimitedError(e) || isCloudflareBlock(e) || attempt >= attempts) throw e;
         const waitMs = Math.max(retryAfterMs(e), minWaitMs);
         const seconds = Math.ceil(waitMs / 1000);
         tsLog('warn', `${label}: rate limit — انتظار ${seconds}s ثم إعادة المحاولة (${attempt + 1}/${attempts})`);
@@ -2231,28 +2231,42 @@ const ts = require('./lib/trueStudio');
     }
   });
 
-  async function executeTsNitroPost(email, { guildId = '', inviteUrl = '', count = 1 } = {}) {
+  async function executeTsNitroPost(email, { guildId = '', inviteUrl = '', count = 1 } = {}, logContext = {}) {
     const accountEmail = String(email || '').trim().toLowerCase();
     const requestedCount = Math.max(1, Math.min(2, Number(count) || 1));
     if (!accountEmail) throw new Error('email required');
 
+    const position = Number(logContext.position || 1);
+    const total = Number(logContext.total || 1);
+    const accountLabel = total > 1 ? `#${position}/${total} · ${accountEmail}` : accountEmail;
+    const nitroLog = (level, stage, message, extra = {}) => tsLog(level, `[Nitro][${accountLabel}][${stage}] ${message}`, {
+      operation: 'nitro_post', confirmed: false, stage, account: accountEmail, ...extra,
+    });
+
+    nitroLog('info', 'start', `بدء التنفيذ (${requestedCount} بوست)`);
     const { token, client } = await tsGetToken(accountEmail);
-    const rateLimiter = makeTsRateLimiter('nitro-post', null, { minimumGapMs: 900, account: accountEmail });
+    const rateLimiter = makeTsRateLimiter('nitro-post', ({ type, waitMs, reason }) => {
+      if (type === 'rate_limit_wait') nitroLog('warn', 'rate_limit', `انتظار ${Math.max(1, Math.ceil(Number(waitMs || 0) / 1000))}s قبل الطلب التالي (${reason || 'Discord'})`);
+      if (type === 'rate_limit_resume') nitroLog('info', 'rate_limit_resume', 'انتهى الانتظار واستئناف الحساب');
+    }, { minimumGapMs: 900, account: accountEmail });
+    const readState = (label) => withTsRateRetry(`${accountLabel} ${label}`, () => enqueueTsAccount(accountEmail, () => readTsNitroState({ token, client, rateLimiter }), { label }), { attempts: 2, minWaitMs: 1000 });
     const requestedGuildId = String(guildId || '').trim();
     const requestedInviteUrl = String(inviteUrl || '').trim();
     let joinedGuildId = requestedGuildId || null;
-    let state = await enqueueTsAccount(accountEmail, () => readTsNitroState({ token, client, rateLimiter }), { label: 'Nitro post status' });
+    nitroLog('info', 'status', 'قراءة الـ slots والـ cooldown');
+    let state = await readState('Nitro post status');
 
     if (!joinedGuildId && requestedInviteUrl) {
       const inviteCode = parseDiscordInvite(requestedInviteUrl);
-      tsLog('info', `Nitro: قبول دعوة السيرفر ${inviteCode} قبل وضع البوستات…`, { operation: 'nitro_post', confirmed: false, stage: 'invite', account: accountEmail });
-      const invite = await enqueueTsAccount(accountEmail, () => ts.acceptInvite({
+      nitroLog('info', 'invite', `قبول دعوة السيرفر ${inviteCode}`);
+      const invite = await withTsRateRetry(`${accountLabel} Join Nitro target server`, () => enqueueTsAccount(accountEmail, () => ts.acceptInvite({
         token,
         inviteCode,
         netOpts: { client, solveCaptcha: buildSolveCaptcha({ require2Captcha: true }), rateLimiter, captchaContext: 'nitro-post-invite' },
-      }), { label: 'Join Nitro target server' });
+      }), { label: 'Join Nitro target server' }), { attempts: 2, minWaitMs: 1000 });
       joinedGuildId = String(invite?.guild?.id || invite?.guild_id || '').trim() || null;
-      state = await enqueueTsAccount(accountEmail, () => readTsNitroState({ token, client, rateLimiter }), { label: 'Refresh Nitro target server' });
+      nitroLog('info', 'status', 'تحديث حالة الحساب بعد قبول الدعوة');
+      state = await readState('Refresh Nitro target server');
       if (!joinedGuildId) {
         const match = state.guilds.find(g => g.name && invite?.guild?.name && g.name === invite.guild.name);
         joinedGuildId = match?.id || null;
@@ -2275,19 +2289,26 @@ const ts = require('./lib/trueStudio');
     }
 
     const slotIds = state.availableSlotIds.slice(0, requestedCount);
-    tsLog('info', `Nitro: وضع ${requestedCount} بوست على ${targetGuild.name}…`, { operation: 'nitro_post', confirmed: false, stage: 'apply', account: accountEmail, guild: joinedGuildId });
-    await enqueueTsAccount(accountEmail, () => ts.applyPremiumGuildSubscriptions({
+    nitroLog('info', 'apply', `وضع ${requestedCount} بوست على ${targetGuild.name}`, { guild: joinedGuildId });
+    await withTsRateRetry(`${accountLabel} Apply Nitro boosts`, () => enqueueTsAccount(accountEmail, () => ts.applyPremiumGuildSubscriptions({
       token,
       guildId: joinedGuildId,
       slotIds,
       netOpts: { client, rateLimiter },
-    }), { label: 'Apply Nitro boosts' });
+    }), { label: 'Apply Nitro boosts' }), { attempts: 2, minWaitMs: 1000 });
 
-    const after = await enqueueTsAccount(accountEmail, () => readTsNitroState({ token, client, rateLimiter }), { label: 'Verify Nitro boosts' });
+    nitroLog('info', 'verify', 'قراءة الحالة النهائية للتحقق');
+    const after = await readState('Verify Nitro boosts');
     const appliedCount = after.slots.filter(s => s.applied && s.guildId === joinedGuildId).length;
     const verified = appliedCount >= requestedCount;
-    tsLog(verified ? 'success' : 'warn', `Nitro: ${verified ? 'تم التحقق من وضع البوستات' : 'تم إرسال الطلب لكن تعذر التحقق الكامل'} (${appliedCount}/${requestedCount})`, { operation: 'nitro_post', confirmed: verified, stage: verified ? 'verified' : 'unverified', account: accountEmail, guild: joinedGuildId });
+    nitroLog(verified ? 'success' : 'warn', verified ? 'complete' : 'unverified', `${verified ? 'تم التحقق من وضع البوستات' : 'تم إرسال الطلب لكن تعذر التحقق الكامل'} (${appliedCount}/${requestedCount})`, { guild: joinedGuildId, confirmed: verified });
     return { email: accountEmail, verified, guild: targetGuild, requestedCount, appliedCount, state: after };
+  }
+
+  function nitroParallelism(value, total) {
+    const requested = Number(value);
+    const normalized = Number.isFinite(requested) && requested > 0 ? Math.floor(requested) : 3;
+    return Math.min(10, Math.max(1, normalized), total);
   }
 
   async function runTsNitroPostBatch(emails, options = {}) {
@@ -2299,16 +2320,33 @@ const ts = require('./lib/trueStudio');
         if (index >= emails.length) return;
         const email = emails[index];
         const startedAt = Date.now();
+        const accountLabel = `#${index + 1}/${emails.length} · ${email}`;
+        tsLog('info', `[Nitro][${accountLabel}][queue] بدء معالجة الحساب`, {
+          operation: 'nitro_post', confirmed: false, stage: 'queued', account: email, position: index + 1, total: emails.length,
+        });
         try {
           results[index] = {
             index,
-            ...(await executeTsNitroPost(email, options)),
+            ...(await executeTsNitroPost(email, options, { position: index + 1, total: emails.length })),
             ok: true,
+            rateLimited: false,
             durationMs: Date.now() - startedAt,
           };
         } catch (e) {
           const message = redactSecretText(e?.message || String(e)).slice(0, 300);
-          tsLog('error', `Nitro: فشل وضع البوست — ${message}`, { operation: 'nitro_post', confirmed: false, stage: 'failed', account: email });
+          const cloudflareBlocked = isCloudflareBlock(e);
+          const rateLimited = isRateLimitedError(e) && !cloudflareBlocked;
+          const waitMs = rateLimited ? retryAfterMs(e, 30_000) : 0;
+          const stage = cloudflareBlocked ? 'cloudflare_block' : rateLimited ? 'rate_limited' : 'failed';
+          const detail = cloudflareBlocked
+            ? 'تم تجاوز الحساب بسبب حظر اتصال Cloudflare'
+            : rateLimited
+              ? `تم إيقاف الحساب مؤقتًا؛ أعد المحاولة بعد ${Math.ceil(waitMs / 1000)}s`
+              : `فشل التنفيذ: ${message}`;
+          tsLog(rateLimited ? 'warn' : 'error', `[Nitro][${accountLabel}][${stage}] ${detail}`, {
+            operation: 'nitro_post', confirmed: false, stage, account: email, position: index + 1, total: emails.length,
+            retryAfterMs: waitMs, rateLimitScope: e?.rateLimit?.scope || null, rateLimitBucket: e?.rateLimit?.bucket || null,
+          });
           results[index] = {
             index,
             email,
@@ -2317,13 +2355,22 @@ const ts = require('./lib/trueStudio');
             error: message,
             code: e?.code || 'NITRO_POST_FAILED',
             cooldown: e?.cooldown || null,
+            rateLimited,
+            cloudflareBlocked,
+            retryAfterMs: waitMs,
+            retryAt: waitMs ? new Date(Date.now() + waitMs).toISOString() : null,
+            rateLimitScope: e?.rateLimit?.scope || null,
+            rateLimitBucket: e?.rateLimit?.bucket || null,
             durationMs: Date.now() - startedAt,
           };
         }
       }
     };
 
-    const parallelism = Math.min(3, Math.max(1, Number(options.parallelism) || 3), emails.length);
+    const parallelism = nitroParallelism(options.parallelism, emails.length);
+    tsLog('info', `[Nitro][batch][queue] تشغيل ${emails.length} حسابًا على ${parallelism} مسارات متزامنة`, {
+      operation: 'nitro_post_bulk', confirmed: false, stage: 'parallel_started', accounts: emails.length, parallelism,
+    });
     await Promise.all(Array.from({ length: parallelism }, worker));
     return results;
   }
@@ -2335,7 +2382,7 @@ const ts = require('./lib/trueStudio');
       const result = await executeTsNitroPost(email, req.body);
       ok(res, { success: true, ...result });
     } catch (e) {
-      tsLog('error', `Nitro: فشل وضع البوست — ${e.message || String(e)}`, { operation: 'nitro_post', confirmed: false, stage: 'failed', account: email });
+      tsLog('error', `[Nitro][${email}][failed] فشل وضع البوست — ${e.message || String(e)}`, { operation: 'nitro_post', confirmed: false, stage: 'failed', account: email });
       fail(res, e);
     }
   });
@@ -2351,12 +2398,18 @@ const ts = require('./lib/trueStudio');
       tsLog('info', `Nitro: بدء وضع البوستات بالتوازي على ${emails.length} حساب`, { operation: 'nitro_post_bulk', confirmed: false, stage: 'started', accounts: emails.length });
       const results = await runTsNitroPostBatch(emails, req.body);
       const successful = results.filter(result => result?.ok === true).length;
+      const rateLimited = results.filter(result => result?.rateLimited === true).length;
+      const parallelism = nitroParallelism(req.body?.parallelism, emails.length);
+      tsLog('info', `[Nitro][batch][complete] اكتملت العملية: ${successful}/${emails.length} ناجح، ${rateLimited} rate limit`, {
+        operation: 'nitro_post_bulk', confirmed: successful === emails.length, stage: 'completed', accounts: emails.length, parallelism, rateLimited,
+      });
       ok(res, {
         success: true,
         total: emails.length,
         completed: results.length,
         successful,
         failed: emails.length - successful,
+        rateLimited,
         results,
       });
     } catch (e) {

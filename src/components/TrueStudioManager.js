@@ -91,6 +91,7 @@ export class TrueStudioManager {
     this.nitroInviteUrl = '';
     this.nitroPostCount = 1;
     this.nitroSelectedEmails = [];
+    this.nitroParallelism = 3;
     this.nitroBulkResults = [];
     this.nitroPostResult = null;
     this.dashboard = null;
@@ -801,6 +802,10 @@ export class TrueStudioManager {
           <select id="ts-nitro-accounts" class="ts-input ts-nitro-accounts-select" multiple size="${Math.min(6, Math.max(3, (this.accounts || []).length))}">${accountOptions}</select>
           <div class="ts-field-hint">${escapeHtml(t('ts.nitro_accounts_hint'))}</div>
         </div>
+        <div class="ts-field"><div class="ts-field-label">${escapeHtml(t('ts.nitro_parallelism_label'))}</div>
+          <select id="ts-nitro-parallelism" class="ts-input">${Array.from({ length: Math.min(10, Math.max(1, (this.accounts || []).length)) }, (_, index) => index + 1).map(value => `<option value="${value}" ${value === Math.min(10, Math.max(1, Number(this.nitroParallelism) || 3)) ? 'selected' : ''}>${value}</option>`).join('')}</select>
+          <div class="ts-field-hint">${escapeHtml(t('ts.nitro_parallelism_hint'))}</div>
+        </div>
         <div class="ts-field"><div class="ts-field-label">${escapeHtml(t('ts.nitro_server_label'))}</div>
           <select id="ts-nitro-guild" class="ts-input" ${guilds.length ? '' : 'disabled'}>
             <option value="">${escapeHtml(guilds.length ? t('ts.nitro_choose_server') : t('ts.nitro_refresh_required'))}</option>
@@ -827,7 +832,9 @@ export class TrueStudioManager {
     if (!this.nitroBulkResults?.length) return summary;
     const rows = this.nitroBulkResults.map(item => {
       const label = item.email || t('ts.common_unknown_account');
-      const message = item.ok ? `${t('ts.nitro_bulk_success')} · ${item.appliedCount ?? 0}/${item.requestedCount ?? this.nitroPostCount}` : (item.error || t('ts.nitro_bulk_failed'));
+      const message = item.rateLimited
+        ? `${t('ts.nitro_rate_limited')} · ${item.error || t('ts.nitro_bulk_failed')}${item.retryAt ? ` · ${t('ts.nitro_retry_at')} ${new Date(item.retryAt).toLocaleTimeString('ar-SA')}` : ''}`
+        : (item.ok ? `${t('ts.nitro_bulk_success')} · ${item.appliedCount ?? 0}/${item.requestedCount ?? this.nitroPostCount}` : (item.error || t('ts.nitro_bulk_failed')));
       return `<div class="ts-nitro-bulk-row"><b>${escapeHtml(label)}</b><span class="ts-server-result-${item.ok ? 'ok' : 'warn'}">${escapeHtml(message)}</span></div>`;
     }).join('');
     return `${summary}<div class="ts-nitro-bulk-results">${rows}</div>`;
@@ -4358,6 +4365,12 @@ export class TrueStudioManager {
       this.nitroPostResult = null;
       this.render();
     });
+    $('#ts-nitro-parallelism')?.addEventListener('change', (e) => {
+      this.nitroParallelism = Math.min(10, Math.max(1, Number(e.target.value) || 3));
+      this.nitroBulkResults = [];
+      this.nitroPostResult = null;
+      this.render();
+    });
     $('#ts-nitro-refresh')?.addEventListener('click', () => this.loadNitroState());
     $('#ts-nitro-guild')?.addEventListener('change', (e) => { this.nitroSelectedGuildId = e.target.value; this.nitroInviteUrl = ''; this.render(); });
     $('#ts-nitro-invite')?.addEventListener('input', (e) => { this.nitroInviteUrl = e.target.value; if (e.target.value.trim()) { this.nitroSelectedGuildId = ''; } });
@@ -4734,13 +4747,15 @@ export class TrueStudioManager {
         if (r?.state) this.nitroState = r.state;
         else await this.loadNitroState();
       } else {
-        const r = await window.electronAPI.tsNitroPostBulk(emails, guildId, inviteUrl, count, 3);
+        const parallelism = Math.min(10, Math.max(1, Number(this.nitroParallelism) || 3));
+        const r = await window.electronAPI.tsNitroPostBulk(emails, guildId, inviteUrl, count, parallelism);
         this.nitroBulkResults = Array.isArray(r?.results) ? r.results : [];
         const verified = this.nitroBulkResults.filter(item => item.verified === true).length;
         const successful = this.nitroBulkResults.filter(item => item.ok === true).length;
+        const rateLimited = this.nitroBulkResults.filter(item => item.rateLimited === true).length;
         this.nitroPostResult = {
           ok: successful === emails.length && verified === emails.length,
-          message: `${t('ts.nitro_bulk_summary')}: ${verified}/${emails.length} ${t('ts.nitro_bulk_verified')} · ${successful}/${emails.length} ${t('ts.nitro_bulk_sent')}`,
+          message: `${t('ts.nitro_bulk_summary')}: ${verified}/${emails.length} ${t('ts.nitro_bulk_verified')} · ${successful}/${emails.length} ${t('ts.nitro_bulk_sent')} · ${rateLimited}/${emails.length} ${t('ts.nitro_bulk_rate_limited')}`,
         };
         const firstState = this.nitroBulkResults.find(item => item.state)?.state;
         if (firstState) this.nitroState = firstState;
