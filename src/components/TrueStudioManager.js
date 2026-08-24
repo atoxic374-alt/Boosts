@@ -87,6 +87,17 @@ export class TrueStudioManager {
     this.serverJoinResult = null;
     this.serverCaptchaVerification = null;
     this.nitroPostOpen = false;
+    this.nitroMoveOpen = false;
+    this.nitroMovePreflight = null;
+    this.nitroMovePreflightLoading = false;
+    this.nitroMovePreflightError = '';
+    this.nitroMoveShowExcluded = false;
+    this.nitroMoveSelectedEmails = [];
+    this.nitroMoveSourceGuildId = '';
+    this.nitroMoveTargetGuildId = '';
+    this.nitroMoveInviteUrl = '';
+    this.nitroMoveCount = 1;
+    this.nitroMoveResult = null;
     this.nitroState = null;
     this.nitroStateError = '';
     this.nitroPreflight = null;
@@ -468,8 +479,9 @@ export class TrueStudioManager {
           <div class="ts-card ts-credentials-card"><div class="ts-card-head"><div class="ts-card-title ar">${escapeHtml(t('ts.account_data'))}</div><span class="ts-card-step">02 / ACCESS</span></div><div class="ts-method-banner"><span class="ts-method-badge token">${escapeHtml(t('ts.method_a_badge'))}</span><span class="ts-method-hint">${escapeHtml(t('ts.method_a_hint'))}</span></div><div class="ts-field"><div class="ts-field-label">Discord User Token</div><input type="password" id="ts-direct-token" class="ts-input ltr" value="" placeholder="${sel?.hasDirectToken ? '•••••• ' + escapeAttr(t('ts.direct_token_saved_ph')) : escapeAttr(t('ts.direct_token_ph'))}" autocomplete="off" />${sel?.hasDirectToken ? `<div class="ts-field-hint ok">${escapeHtml(t('ts.direct_token_saved_hint'))}</div>` : `<div class="ts-field-hint">${escapeHtml(t('ts.direct_token_how'))}</div>`}</div><details class="ts-method-collapsible"><summary><span class="ts-method-badge email">${escapeHtml(t('ts.method_b_badge'))}</span><span class="ts-method-hint">${escapeHtml(t('ts.method_b_hint'))}</span></summary><div class="ts-form-grid ts-method-body"><div class="ts-field"><div class="ts-field-label">Email</div><input type="email" id="ts-email" class="ts-input ltr" value="${escapeAttr(this.form.email)}" autocomplete="off" /></div><div class="ts-field"><div class="ts-field-label">Password</div><input type="password" id="ts-password" class="ts-input ltr" value="" autocomplete="off" /></div><div class="ts-field"><div class="ts-field-label">2FA Secret</div><input type="text" id="ts-totp" class="ts-input totp" value="" autocomplete="off" /></div></div></details></div>
           <div class="ts-card ts-server-join-card"><div class="ts-card-head"><div class="ts-card-title ar">${escapeHtml(t('ts.join_server_title'))}</div><span class="ts-card-step">03 / SERVER</span></div><div class="ts-server-join-intro">${escapeHtml(t('ts.join_server_hint'))}</div><div class="ts-server-join-row"><div class="ts-field"><div class="ts-field-label">${escapeHtml(t('ts.server_invite_label'))}</div><input type="url" id="ts-server-invite" class="ts-input ltr" value="${escapeAttr(this.serverInviteUrl)}" placeholder="https://discord.gg/..." autocomplete="off" /></div><button class="ts-btn mint ts-server-join-btn" id="ts-server-join" ${this.selectedEmail ? '' : 'disabled'}>${escapeHtml(t('ts.join_server_button'))}</button></div><div class="ts-server-captcha-check"><div><strong>${escapeHtml(t('ts.join_server_captcha_title'))}</strong><span>${this._renderServerCaptchaCheck()}</span></div><button class="ts-btn ts-btn-xs" id="ts-server-captcha-check">${escapeHtml(t('ts.join_server_captcha_verify'))}</button></div><div id="ts-server-join-result" class="ts-server-join-result">${this._renderServerJoinResult()}</div></div>
           ${this._renderCaptchaSettings()}
-          <div class="ts-nitro-post-trigger"><button class="ts-btn mint" id="ts-nitro-post-open">${icon('zap', 'ts-inline-icon')} ${escapeHtml(t('ts.nitro_post_button'))}</button><span>${escapeHtml(t('ts.nitro_post_trigger_hint'))}</span></div>
+          <div class="ts-nitro-post-trigger"><button class="ts-btn mint" id="ts-nitro-post-open">${icon('bolt', 'ts-inline-icon')} ${escapeHtml(t('ts.nitro_post_button'))}</button><button class="ts-btn" id="ts-nitro-move-open">${icon('refresh', 'ts-inline-icon')} ${escapeHtml(t('ts.nitro_move_button') || 'تغيير سيرفر البوست')}</button><span>${escapeHtml(t('ts.nitro_post_trigger_hint'))}</span></div>
           ${this.nitroPostOpen ? this._renderNitroPostCard() : ''}
+          ${this.nitroMoveOpen ? this._renderNitroMoveCard() : ''}
         </section>
         <section class="ts-category ts-category-reports" id="ts-cat-reports"><div class="ts-category-heading"><div><span class="ts-category-number">02</span><h2>${escapeHtml(t('ts.ui_reports') || 'السجل')}</h2></div><p>${escapeHtml(t('ts.ui_reports_desc') || 'سجل العمليات يظهر النتائج والتحقق بدون كشف التوكن.')}</p></div><div class="ts-card ts-log-card"><div class="ts-card-head"><div class="ts-card-title ar">${escapeHtml(t('ts.live_log') || 'Live Log')}</div></div><div class="ts-log" id="ts-log">${this._renderLog(this.snapshot?.log || [])}</div></div></section>
       </div>`;
@@ -551,10 +563,12 @@ export class TrueStudioManager {
             <div><strong>${escapeHtml(t('ts.connect_existing_title') || 'الاتصال بحساب موجود')}</strong><span>${escapeHtml(t('ts.connect_existing_hint') || 'يُستخدم هذا القسم لربط الحساب وتخزين بيانات الوصول محلياً فقط.')}</span></div>
           </div>
           <div class="ts-nitro-post-trigger">
-            <button class="ts-btn mint" id="ts-nitro-post-open">${icon('zap', 'ts-inline-icon')} ${escapeHtml(t('ts.nitro_post_button'))}</button>
+            <button class="ts-btn mint" id="ts-nitro-post-open">${icon('bolt', 'ts-inline-icon')} ${escapeHtml(t('ts.nitro_post_button'))}</button>
+            <button class="ts-btn" id="ts-nitro-move-open">${icon('refresh', 'ts-inline-icon')} ${escapeHtml(t('ts.nitro_move_button') || 'تغيير سيرفر البوست')}</button>
             <span>${escapeHtml(t('ts.nitro_post_trigger_hint'))}</span>
           </div>
           ${this.nitroPostOpen ? this._renderNitroPostCard() : ''}
+          ${this.nitroMoveOpen ? this._renderNitroMoveCard() : ''}
           <div class="ts-category-grid ts-category-grid-accounts">
             <div class="ts-category-primary">
               <div class="ts-card ts-accounts-card">
@@ -782,6 +796,50 @@ export class TrueStudioManager {
     }
     return filtered;
   }
+  _renderNitroMoveCard() {
+    const results = Array.isArray(this.nitroMovePreflight?.results) ? this.nitroMovePreflight.results : [];
+    const byEmail = new Map(results.map(result => [String(result.email || '').toLowerCase(), result]));
+    const ready = results.filter(result => result.ready === true);
+    const excluded = results.filter(result => result.ready !== true);
+    const sourceMap = new Map();
+    results.forEach(result => (result.sourceGuilds || []).forEach(guild => sourceMap.set(String(guild.id), guild)));
+    const targetGuilds = Array.isArray(this.nitroState?.guilds) ? this.nitroState.guilds : [];
+    const selected = (this.nitroMoveSelectedEmails || []).filter(email => byEmail.get(email)?.ready === true);
+    const preflightReady = !!this.nitroMovePreflight && !this.nitroMovePreflightLoading && !this.nitroMovePreflightError;
+    const accountOptions = ready.map(result => `<option value="${escapeAttr(result.email)}" ${selected.includes(result.email) ? 'selected' : ''}>${escapeHtml(result.displayName || t('ts.account_fallback_name'))} · ${escapeHtml(String(result.slots?.length || 0))} ${escapeHtml(t('ts.nitro_move_slots') || 'بوست')}</option>`).join('');
+    const sourceOptions = [...sourceMap.values()].sort((a, b) => String(a.name).localeCompare(String(b.name))).map(guild => `<option value="${escapeAttr(guild.id)}" ${String(guild.id) === String(this.nitroMoveSourceGuildId) ? 'selected' : ''}>${escapeHtml(guild.name || guild.id)}</option>`).join('');
+    const targetOptions = targetGuilds.filter(guild => String(guild.id) !== String(this.nitroMoveSourceGuildId)).map(guild => `<option value="${escapeAttr(guild.id)}" ${String(guild.id) === String(this.nitroMoveTargetGuildId) ? 'selected' : ''}>${escapeHtml(guild.name || guild.id)}</option>`).join('');
+    const summary = this.nitroMovePreflightLoading
+      ? `<div class="ts-nitro-preflight-summary warn">${escapeHtml(t('ts.nitro_move_loading') || 'جارٍ فحص الحسابات القابلة للنقل…')}</div>`
+      : this.nitroMovePreflightError
+        ? `<div class="ts-nitro-preflight-summary warn">${escapeHtml(this.nitroMovePreflightError)}</div>`
+        : this.nitroMovePreflight
+          ? `<div class="ts-nitro-preflight-summary ${ready.length ? 'ok' : 'warn'}">${escapeHtml(t('ts.nitro_move_ready') || 'جاهز للتغيير')} ${ready.length} · ${escapeHtml(t('ts.nitro_preflight_excluded') || 'المستبعد')} ${excluded.length}${excluded.length ? ` · <button type="button" class="ts-link-btn" id="ts-nitro-move-show-excluded">${escapeHtml(t('ts.nitro_show_excluded') || 'عرض الأسباب')}</button>` : ''}</div>${this.nitroMoveShowExcluded ? `<div class="ts-nitro-excluded-list">${excluded.map(result => `<div><b>${escapeHtml(result.displayName || t('ts.account_fallback_name'))}</b><span>${escapeHtml(result.reason || result.status || '')}</span></div>`).join('')}</div>` : ''}`
+          : '';
+    const canSubmit = preflightReady && selected.length > 0 && (this.nitroMoveTargetGuildId || this.nitroMoveInviteUrl.trim());
+    return `<div class="ts-card ts-nitro-post-card ts-nitro-move-card" id="ts-nitro-move-card">
+      <div class="ts-card-head"><div class="ts-card-title ar">${escapeHtml(t('ts.nitro_move_title') || 'تغيير سيرفر البوستات')}</div><span class="ts-card-step">NITRO / MOVE</span></div>
+      <div class="ts-nitro-post-hint">${escapeHtml(t('ts.nitro_move_hint') || 'اختر حسابات لديها بوستات فعالة وانتهى cooldown لنقلها إلى سيرفر آخر.')}</div>
+      <div class="ts-nitro-post-fields">
+        <div class="ts-field ts-nitro-account-field"><div class="ts-field-label">${escapeHtml(t('ts.nitro_move_accounts') || 'الحسابات القابلة للنقل')}</div><select id="ts-nitro-move-accounts" class="ts-input ts-nitro-accounts-select" multiple size="${Math.min(6, Math.max(3, ready.length || 3))}" ${this.nitroMovePreflightLoading || !preflightReady ? 'disabled' : ''}>${accountOptions || `<option disabled>${escapeHtml(t('ts.nitro_move_no_ready') || 'لا توجد حسابات قابلة للنقل')}</option>`}</select>${summary}</div>
+        <div class="ts-field"><div class="ts-field-label">${escapeHtml(t('ts.nitro_move_source') || 'السيرفر المصدر')}</div><select id="ts-nitro-move-source" class="ts-input"><option value="">${escapeHtml(t('ts.nitro_move_source_auto') || 'تلقائي إذا كان هناك سيرفر واحد')}</option>${sourceOptions}</select></div>
+        <div class="ts-field"><div class="ts-field-label">${escapeHtml(t('ts.nitro_move_target') || 'السيرفر الهدف')}</div><select id="ts-nitro-move-target" class="ts-input" ${targetOptions ? '' : 'disabled'}><option value="">${escapeHtml(targetOptions ? 'اختر السيرفر الهدف' : 'حدّد حسابًا أولًا')}</option>${targetOptions}</select></div>
+        <div class="ts-field"><div class="ts-field-label">${escapeHtml(t('ts.nitro_move_invite') || 'أو رابط دعوة الهدف')}</div><input id="ts-nitro-move-invite" type="url" class="ts-input ltr" value="${escapeAttr(this.nitroMoveInviteUrl)}" placeholder="https://discord.gg/..." autocomplete="off" /></div>
+        <div class="ts-field"><div class="ts-field-label">${escapeHtml(t('ts.nitro_count_label'))}</div><select id="ts-nitro-move-count" class="ts-input"><option value="1" ${this.nitroMoveCount === 1 ? 'selected' : ''}>1</option><option value="2" ${this.nitroMoveCount === 2 ? 'selected' : ''}>2</option></select></div>
+        <div class="ts-field"><div class="ts-field-label">${escapeHtml(t('ts.nitro_parallelism_label'))}</div><select id="ts-nitro-move-parallelism" class="ts-input">${Array.from({ length: Math.min(10, Math.max(1, this.accounts.length)) }, (_, index) => index + 1).map(value => `<option value="${value}" ${value === Math.min(10, Math.max(1, Number(this.nitroParallelism) || 3)) ? 'selected' : ''}>${value}</option>`).join('')}</select></div>
+      </div>
+      <div class="ts-nitro-post-actions"><button class="ts-btn" id="ts-nitro-move-refresh">${escapeHtml(t('ts.nitro_refresh'))}</button><button class="ts-btn danger" id="ts-nitro-move-submit" ${canSubmit ? '' : 'disabled'}>${escapeHtml(t('ts.nitro_move_submit') || 'Change')}</button></div>
+      <div id="ts-nitro-move-result" class="ts-nitro-post-result">${this._renderNitroMoveResult()}</div>
+    </div>`;
+  }
+
+  _renderNitroMoveResult() {
+    const result = this.nitroMoveResult;
+    if (!result) return '';
+    const rows = (result.results || []).map(item => `<div class="ts-nitro-bulk-row"><b>${escapeHtml(item.displayName || t('ts.account_fallback_name'))}</b><span class="ts-server-result-${item.verified ? 'ok' : 'warn'}">${escapeHtml(item.verified ? `${t('ts.nitro_move_complete') || 'تم النقل'} · ${item.appliedCount || 0}` : (item.error || t('ts.nitro_move_failed') || 'فشل النقل'))}</span></div>`).join('');
+    return `<span class="ts-server-result-${result.ok ? 'ok' : 'warn'}">${escapeHtml(result.message || '')}</span>${rows ? `<div class="ts-nitro-bulk-results">${rows}</div>` : ''}`;
+  }
+
   _renderNitroPostCard() {
     const state = this.nitroState;
     const cooldown = state?.cooldown;
@@ -1335,7 +1393,7 @@ export class TrueStudioManager {
       return `
         <div class="ts-pool-row ts-pool-row--ready">
           <span class="ts-pool-dot ts-pool-dot--ready"></span>
-          <span class="ts-pool-email">${escapeHtml(email)}</span>
+          <span class="ts-pool-email">${escapeHtml(displayName)}</span>
           <span class="ts-pool-badge ts-pool-badge--ready">متاح</span>
         </div>`;
     }).join('');
@@ -4404,6 +4462,16 @@ export class TrueStudioManager {
     $('#ts-server-join')?.addEventListener('click', () => this.joinServer());
     $('#ts-server-captcha-check')?.addEventListener('click', () => this.verifyServerCaptchaKey());
     $('#ts-nitro-post-open')?.addEventListener('click', () => this.openNitroPost());
+    $('#ts-nitro-move-open')?.addEventListener('click', () => this.openNitroMove());
+    $('#ts-nitro-move-accounts')?.addEventListener('change', (e) => { this.nitroMoveSelectedEmails = [...e.target.selectedOptions].map(option => option.value); this.nitroMoveResult = null; this.render(); });
+    $('#ts-nitro-move-source')?.addEventListener('change', (e) => { this.nitroMoveSourceGuildId = e.target.value; this.nitroMoveSelectedEmails = []; this.loadNitroMovePreflight(); });
+    $('#ts-nitro-move-target')?.addEventListener('change', (e) => { this.nitroMoveTargetGuildId = e.target.value; this.nitroMoveInviteUrl = ''; this.loadNitroMovePreflight(); });
+    $('#ts-nitro-move-invite')?.addEventListener('input', (e) => { this.nitroMoveInviteUrl = e.target.value; if (e.target.value.trim()) { this.nitroMoveTargetGuildId = ''; } this.render(); });
+    $('#ts-nitro-move-count')?.addEventListener('change', (e) => { this.nitroMoveCount = Math.max(1, Math.min(2, Number(e.target.value) || 1)); this.nitroMoveSelectedEmails = []; this.loadNitroMovePreflight(); });
+    $('#ts-nitro-move-parallelism')?.addEventListener('change', (e) => { this.nitroParallelism = Math.min(10, Math.max(1, Number(e.target.value) || 3)); this.loadNitroMovePreflight(); });
+    $('#ts-nitro-move-refresh')?.addEventListener('click', () => this.loadNitroMovePreflight());
+    $('#ts-nitro-move-show-excluded')?.addEventListener('click', () => { this.nitroMoveShowExcluded = !this.nitroMoveShowExcluded; this.render(); });
+    $('#ts-nitro-move-submit')?.addEventListener('click', () => this.submitNitroMove());
     $('#ts-nitro-accounts')?.addEventListener('change', (e) => {
       this.nitroSelectedEmails = [...e.target.selectedOptions].map(option => option.value);
       if (!this.nitroPackageMonthsTouched) {
@@ -4751,12 +4819,73 @@ export class TrueStudioManager {
     }
   }
 
+  async openNitroMove() {
+    if (!this.selectedEmail) {
+      showNotification(t('ts.pick_account_first'), 'error');
+      return;
+    }
+    this.nitroMoveOpen = true;
+    this.nitroPostOpen = false;
+    this.nitroMovePreflight = null;
+    this.nitroMovePreflightLoading = true;
+    this.nitroMovePreflightError = '';
+    this.nitroMoveShowExcluded = false;
+    this.nitroMoveSelectedEmails = this._getNitroSelectedEmails().length ? this._getNitroSelectedEmails() : [String(this.selectedEmail).toLowerCase()];
+    this.nitroMoveResult = null;
+    this.render();
+    await Promise.all([this.loadNitroState(), this.loadNitroMovePreflight()]);
+  }
+
+  async loadNitroMovePreflight() {
+    const emails = this.accounts.map(account => account.email).filter(Boolean);
+    if (!emails.length) return;
+    this.nitroMovePreflightLoading = true;
+    this.nitroMovePreflightError = '';
+    this.render();
+    try {
+      const r = await window.electronAPI.tsNitroMovePreflight(emails, this.nitroMoveSourceGuildId, this.nitroMoveTargetGuildId, this.nitroMoveCount, this.nitroParallelism);
+      if (!r?.success) throw new Error(r?.error || t('ts.nitro_move_preflight_failed') || 'تعذر فحص الحسابات القابلة للنقل');
+      this.nitroMovePreflight = r;
+      const readyEmails = new Set((r.results || []).filter(result => result.ready === true).map(result => String(result.email || '').toLowerCase()));
+      this.nitroMoveSelectedEmails = this.nitroMoveSelectedEmails.filter(email => readyEmails.has(String(email).toLowerCase()));
+      const selectedResult = r.results?.find(result => result.email === String(this.selectedEmail || '').toLowerCase() && result.state);
+      if (selectedResult?.state) this.nitroState = selectedResult.state;
+    } catch (e) {
+      this.nitroMovePreflight = null;
+      this.nitroMovePreflightError = e.message || t('ts.nitro_move_preflight_failed') || 'تعذر فحص الحسابات القابلة للنقل';
+    } finally {
+      this.nitroMovePreflightLoading = false;
+      this.render();
+    }
+  }
+
+  async submitNitroMove() {
+    const emails = [...new Set((this.nitroMoveSelectedEmails || []).map(email => String(email || '').toLowerCase()))];
+    const ready = new Set((this.nitroMovePreflight?.results || []).filter(result => result.ready === true).map(result => String(result.email || '').toLowerCase()));
+    if (!emails.length || emails.some(email => !ready.has(email))) return showNotification(t('ts.nitro_move_no_ready') || 'اختر حسابات قابلة للنقل', 'error');
+    if (!this.nitroMoveTargetGuildId && !this.nitroMoveInviteUrl.trim()) return showNotification(t('ts.nitro_move_target_required') || 'اختر السيرفر الهدف أو أدخل رابط دعوة', 'error');
+    const warning = t('ts.nitro_move_confirm') || 'سيتم فك البوست من السيرفر المصدر ثم تطبيقه على السيرفر الهدف. هل تريد المتابعة؟';
+    if (!window.confirm(warning)) return;
+    this.nitroMoveResult = { ok: false, message: t('ts.nitro_move_working') || 'جارٍ تغيير السيرفر…', results: [] };
+    this.render();
+    try {
+      const r = await window.electronAPI.tsNitroMove(emails, this.nitroMoveSourceGuildId, this.nitroMoveTargetGuildId, this.nitroMoveInviteUrl.trim(), this.nitroMoveCount, this.nitroParallelism, true);
+      this.nitroMoveResult = { ok: Number(r?.successful || 0) > 0 && Number(r?.failed || 0) === 0, message: `${t('ts.nitro_move_summary') || 'نتيجة تغيير السيرفر'}: ${r?.successful || 0}/${emails.length}`, results: Array.isArray(r?.results) ? r.results : [] };
+      await Promise.all([this.loadDashboard(), this.loadNitroState(), this.loadNitroMovePreflight()]);
+    } catch (e) {
+      this.nitroMoveResult = { ok: false, message: e.message || t('ts.nitro_move_failed') || 'فشل تغيير السيرفر', results: [] };
+      this.render();
+    }
+    showNotification(this.nitroMoveResult.message, this.nitroMoveResult.ok ? 'success' : 'warn');
+  }
+
   async openNitroPost() {
     if (!this.selectedEmail) {
       showNotification(t('ts.pick_account_first'), 'error');
       return;
     }
     this.nitroPostOpen = true;
+    this.nitroMoveOpen = false;
     this.nitroState = null;
     this.nitroStateError = '';
     this.nitroPreflight = null;

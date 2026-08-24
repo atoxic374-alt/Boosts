@@ -34,6 +34,8 @@ When importing numbered tokens, choose a Nitro duration in the import card. That
 
 Before the Nitro account selector becomes available, the app runs a bulk preflight across the saved accounts. Only accounts that pass the health check, have enough available Nitro slots for the requested boost count, have no active boost subscription, and have no active cooldown are shown as selectable. The card reports ready and excluded counts; exclusion reasons can be expanded for each account. The server repeats these checks at execution time so stale dashboard data cannot force a boost attempt on an ineligible account.
 
+The **Change boost server** flow performs the complementary check: it lists only accounts with active boosts whose account and slot cooldowns have ended, verifies the target membership, and asks for confirmation before the side-effecting operation. A confirmed move releases the applied premium guild subscription, refreshes the slot state, applies the released slot to the target guild, and verifies the target assignment. If Discord accepts the release but rejects the re-application, the result is reported as partial so the operator can refresh the account state instead of blindly retrying.
+
 ## Security
 
 Account credentials are encrypted at rest using AES-256-GCM. Every secret gets a fresh random IV and authentication tag. Records are stored as an encrypted envelope such as `v1:<iv>:<tag>:<ciphertext>`; plaintext records remain readable only for one-way migration when a write occurs.

@@ -2264,6 +2264,7 @@ const ts = require('./lib/trueStudio');
     const applied = !!subscription && subscription.ended !== true;
     return {
       id: String(slot?.id || '').trim(),
+      subscriptionId: applied ? String(subscription.id || '').trim() || null : null,
       canceled: slot?.canceled === true,
       applied,
       guildId: applied ? String(subscription.guild_id || '').trim() || null : null,
@@ -2369,7 +2370,7 @@ const ts = require('./lib/trueStudio');
             if (type === 'rate_limit_resume') log('info', 'rate_limit_resume', 'استئناف الفحص');
           }, { minimumGapMs: 900, account: email });
           const health = await withTsRateRetry(`${accountLabel} health`, () => enqueueTsAccount(email, () => ts.accountHealthProbe({
-            token, netOpts: { client, rateLimiter },
+            token, netOpts: { client, rateLimiter, solveCaptcha: buildSolveCaptcha({ require2Captcha: true }), captchaContext: 'nitro-preflight-health' },
           }), { label: 'Nitro preflight health' }), { attempts: 2, minWaitMs: 1000 });
           if (!health?.ready) {
             const error = new Error(health?.message || 'الحساب غير صالح للتنفيذ');
@@ -2435,6 +2436,169 @@ const ts = require('./lib/trueStudio');
     ok(res, { total: emails.length, ready: ready.length, excluded: excluded.length, parallelism, results, accounts: tsAccountsPublic() });
   });
 
+  function getTsMoveSlots(state, sourceGuildId = '', count = 1) {
+    const source = String(sourceGuildId || '').trim();
+    return (Array.isArray(state?.slots) ? state.slots : [])
+      .filter(slot => slot.applied && slot.guildId && (!source || String(slot.guildId) === source))
+      .filter(slot => slot.subscriptionId)
+      .filter(slot => !slot.cooldownEndsAt || Date.parse(slot.cooldownEndsAt) <= Date.now())
+      .slice(0, Math.max(1, Math.min(2, Number(count) || 1)));
+  }
+
+  function updateTsPackagesAfterMove(email, sourceGuildId, targetGuildId, targetGuildName, count) {
+    const account = tsFindAccount(email);
+    if (!account || !Array.isArray(account.nitroPackages)) return 0;
+    const source = String(sourceGuildId || '').trim();
+    const target = String(targetGuildId || '').trim();
+    let remaining = Math.max(1, Math.min(2, Number(count) || 1));
+    let moved = 0;
+    account.nitroPackages = account.nitroPackages.map(pkg => {
+      if (!remaining || !pkg?.active || (source && String(pkg.guildId || '') !== source)) return pkg;
+      remaining--;
+      moved++;
+      return { ...pkg, guildId: target, guildName: targetGuildName || pkg.guildName, movedAt: new Date().toISOString(), movedFromGuildId: source || pkg.movedFromGuildId || null };
+    });
+    if (moved) writeData(ensureData());
+    return moved;
+  }
+
+  app.post('/api/ts/nitro/move-preflight', async (req, res) => {
+    const hasExplicitEmails = Object.prototype.hasOwnProperty.call(req.body || {}, 'emails');
+    const requestedEmails = hasExplicitEmails
+      ? (Array.isArray(req.body?.emails) ? req.body.emails : [])
+      : tsAccountsPublic().map(account => account.email);
+    const emails = [...new Set(requestedEmails.map(value => String(value || '').trim().toLowerCase()).filter(email => tsFindAccount(email)))].slice(0, 100);
+    const sourceGuildId = String(req.body?.sourceGuildId || '').trim();
+    const targetGuildId = String(req.body?.targetGuildId || '').trim();
+    const count = Math.max(1, Math.min(2, Number(req.body?.count) || 1));
+    if (!emails.length) return fail(res, new Error('لا توجد حسابات لفحص إمكانية النقل'));
+    const results = new Array(emails.length);
+    let cursor = 0;
+    const worker = async () => {
+      while (true) {
+        const index = cursor++;
+        if (index >= emails.length) return;
+        const email = emails[index];
+        const displayName = tsAccountDisplayName(email, index);
+        const accountLabel = `#${index + 1}/${emails.length} · ${displayName}`;
+        const startedAt = Date.now();
+        const log = (level, stage, message, extra = {}) => tsLog(level, `[Nitro][${accountLabel}][move-preflight:${stage}] ${message}`, { operation: 'nitro_move_preflight', confirmed: false, stage, account: email, position: index + 1, total: emails.length, ...extra });
+        try {
+          log('info', 'start', 'بدء فحص إمكانية تغيير السيرفر');
+          const { token, client } = await tsGetToken(email);
+          const rateLimiter = makeTsRateLimiter('nitro-move-preflight', ({ type, waitMs, reason }) => {
+            if (type === 'rate_limit_wait') log('warn', 'rate_limit', `انتظار ${Math.max(1, Math.ceil(Number(waitMs || 0) / 1000))}s (${reason || 'Discord'})`);
+            if (type === 'rate_limit_resume') log('info', 'rate_limit_resume', 'استئناف الفحص');
+          }, { minimumGapMs: 900, account: email });
+          const health = await withTsRateRetry(`${accountLabel} health`, () => enqueueTsAccount(email, () => ts.accountHealthProbe({ token, netOpts: { client, rateLimiter, solveCaptcha: buildSolveCaptcha({ require2Captcha: true }), captchaContext: 'nitro-move-health' } }), { label: 'Nitro move health' }), { attempts: 2, minWaitMs: 1000 });
+          if (!health?.ready) { const error = new Error(health?.message || 'الحساب غير صالح'); error.code = health?.classification || 'ACCOUNT_NOT_READY'; throw error; }
+          const state = await withTsRateRetry(`${accountLabel} Nitro status`, () => enqueueTsAccount(email, () => readTsNitroState({ token, client, rateLimiter }), { label: 'Nitro move status' }), { attempts: 2, minWaitMs: 1000 });
+          persistTsNitroState(email, state);
+          const sourceGuilds = (state.boostedGuilds || []).filter(g => !sourceGuildId || String(g.id) === sourceGuildId);
+          const slots = getTsMoveSlots(state, sourceGuildId, count);
+          const futureSlotCooldown = (state.slots || []).filter(slot => slot.applied && (!sourceGuildId || slot.guildId === sourceGuildId)).map(slot => slot.cooldownEndsAt).filter(value => value && Date.parse(value) > Date.now()).sort()[0] || null;
+          let status = 'ready';
+          let reason = 'جاهز لتغيير السيرفر';
+          if (state.cooldown?.active) { status = 'cooldown'; reason = `مستبعد: cooldown حتى ${state.cooldown.endsAt}`; }
+          else if (!sourceGuilds.length) { status = 'no_boost'; reason = 'مستبعد: لا يوجد بوست مفعل على السيرفر المصدر'; }
+          else if (!sourceGuildId && sourceGuilds.length > 1) { status = 'source_required'; reason = 'مستبعد: اختر السيرفر المصدر لأن الحساب يضع بوستات على أكثر من سيرفر'; }
+          else if (slots.length < count) { status = 'missing_slots'; reason = futureSlotCooldown ? `مستبعد: لا توجد ${count} slots جاهزة؛ أقرب cooldown حتى ${futureSlotCooldown}` : `مستبعد: لا توجد ${count} slots قابلة للنقل مع معرف اشتراك صالح`; }
+          else if (targetGuildId && !state.guilds.some(g => String(g.id) === targetGuildId)) { status = 'not_member'; reason = 'مستبعد: الحساب ليس عضوًا في السيرفر الهدف'; }
+          else if (targetGuildId && slots.some(slot => String(slot.guildId) === targetGuildId)) { status = 'same_server'; reason = 'مستبعد: السيرفر الهدف هو السيرفر الحالي للبوست'; }
+          const ready = status === 'ready';
+          log(ready ? 'success' : 'info', status, reason, { confirmed: ready, sourceGuilds: sourceGuilds.length, moveSlots: slots.length });
+          results[index] = { index, email, displayName, ready, status, reason, sourceGuilds, slots, state, availableSlots: state.availableSlotIds?.length || 0, cooldown: state.cooldown || null, durationMs: Date.now() - startedAt };
+        } catch (e) {
+          const reason = redactSecretText(e?.message || String(e)).slice(0, 300);
+          log('error', e?.code || 'failed', reason);
+          results[index] = { index, email, displayName, ready: false, status: e?.code || 'failed', reason, sourceGuilds: [], slots: [], durationMs: Date.now() - startedAt };
+        }
+      }
+    };
+    const parallelism = nitroParallelism(req.body?.parallelism, emails.length);
+    await Promise.all(Array.from({ length: parallelism }, worker));
+    const ready = results.filter(result => result?.ready === true);
+    ok(res, { total: emails.length, ready: ready.length, excluded: emails.length - ready.length, parallelism, sourceGuildId: sourceGuildId || null, targetGuildId: targetGuildId || null, count, results, accounts: tsAccountsPublic() });
+  });
+
+  app.post('/api/ts/nitro/move', async (req, res) => {
+    const requestedEmails = Array.isArray(req.body?.emails) ? req.body.emails : [];
+    const emails = [...new Set(requestedEmails.map(value => String(value || '').trim().toLowerCase()).filter(email => tsFindAccount(email)))].slice(0, 100);
+    const sourceGuildId = String(req.body?.sourceGuildId || '').trim();
+    const targetGuildId = String(req.body?.targetGuildId || '').trim();
+    const inviteUrl = String(req.body?.inviteUrl || '').trim();
+    const count = Math.max(1, Math.min(2, Number(req.body?.count) || 1));
+    if (!emails.length) return fail(res, new Error('اختر حسابات جاهزة للنقل'));
+    if (!targetGuildId && !inviteUrl) return fail(res, new Error('اختر السيرفر الهدف أو أدخل رابط دعوة'));
+    if (req.body?.confirmed !== true) return fail(res, new Error('تأكيد تغيير السيرفر مطلوب قبل تنفيذ العملية'));
+    const results = new Array(emails.length);
+    let cursor = 0;
+    const worker = async () => {
+      while (true) {
+        const index = cursor++;
+        if (index >= emails.length) return;
+        const email = emails[index];
+        const displayName = tsAccountDisplayName(email, index);
+        const accountLabel = `#${index + 1}/${emails.length} · ${displayName}`;
+        const startedAt = Date.now();
+        let released = 0;
+        const log = (level, stage, message, extra = {}) => tsLog(level, `[Nitro][${accountLabel}][move:${stage}] ${message}`, { operation: 'nitro_move', confirmed: false, stage, account: email, position: index + 1, total: emails.length, ...extra });
+        try {
+          log('info', 'start', `بدء نقل ${count} بوست`);
+          const { token, client } = await tsGetToken(email);
+          const rateLimiter = makeTsRateLimiter('nitro-move', ({ type, waitMs, reason }) => {
+            if (type === 'rate_limit_wait') log('warn', 'rate_limit', `انتظار ${Math.max(1, Math.ceil(Number(waitMs || 0) / 1000))}s (${reason || 'Discord'})`);
+            if (type === 'rate_limit_resume') log('info', 'rate_limit_resume', 'استئناف الحساب');
+          }, { minimumGapMs: 900, account: email });
+          const netOpts = { client, rateLimiter, solveCaptcha: buildSolveCaptcha({ require2Captcha: true }), captchaContext: 'nitro-move' };
+          const health = await withTsRateRetry(`${accountLabel} health`, () => enqueueTsAccount(email, () => ts.accountHealthProbe({ token, netOpts }), { label: 'Nitro move health' }), { attempts: 2, minWaitMs: 1000 });
+          if (!health?.ready) throw new Error(health?.message || 'الحساب غير صالح');
+          let state = await withTsRateRetry(`${accountLabel} source status`, () => enqueueTsAccount(email, () => readTsNitroState({ token, client, rateLimiter }), { label: 'Nitro move source status' }), { attempts: 2, minWaitMs: 1000 });
+          persistTsNitroState(email, state);
+          if (!sourceGuildId && state.boostedGuilds?.length > 1) throw new Error('حدد السيرفر المصدر عندما تكون للحساب بوستات على أكثر من سيرفر');
+          const source = sourceGuildId || state.boostedGuilds?.[0]?.id;
+          let target = targetGuildId;
+          if (!target && inviteUrl) {
+            const invite = await withTsRateRetry(`${accountLabel} Join move target`, () => enqueueTsAccount(email, () => ts.acceptInvite({ token, inviteCode: parseDiscordInvite(inviteUrl), netOpts }), { label: 'Join move target' }), { attempts: 2, minWaitMs: 1000 });
+            target = String(invite?.guild?.id || invite?.guild_id || '').trim();
+            state = await withTsRateRetry(`${accountLabel} target refresh`, () => enqueueTsAccount(email, () => readTsNitroState({ token, client, rateLimiter }), { label: 'Nitro move target refresh' }), { attempts: 2, minWaitMs: 1000 });
+          }
+          const targetGuild = state.guilds.find(g => String(g.id) === String(target));
+          if (!targetGuild) throw new Error('الحساب ليس عضوًا في السيرفر الهدف');
+          const moveSlots = getTsMoveSlots(state, source, count);
+          if (state.cooldown?.active) throw new Error(`cooldown حتى ${state.cooldown.endsAt}`);
+          if (moveSlots.length < count) throw new Error(`لا توجد ${count} بوستات قابلة للنقل بعد انتهاء cooldown`);
+          if (moveSlots.some(slot => String(slot.guildId) === String(target))) throw new Error('السيرفر الهدف يطابق السيرفر الحالي');
+          for (const slot of moveSlots) {
+            log('info', 'release', `فك البوست من السيرفر المصدر`, { sourceGuildId: slot.guildId, subscriptionId: slot.subscriptionId });
+            await withTsRateRetry(`${accountLabel} release boost`, () => enqueueTsAccount(email, () => ts.deletePremiumGuildSubscription({ token, guildId: slot.guildId, subscriptionId: slot.subscriptionId, netOpts }), { label: 'Release Nitro boost' }), { attempts: 2, minWaitMs: 1000 });
+            released++;
+          }
+          state = await withTsRateRetry(`${accountLabel} released status`, () => enqueueTsAccount(email, () => readTsNitroState({ token, client, rateLimiter }), { label: 'Nitro move released status' }), { attempts: 2, minWaitMs: 1000 });
+          const availableSlotIds = Array.isArray(state.availableSlotIds) ? state.availableSlotIds.slice(0, count) : [];
+          if (availableSlotIds.length < count) throw new Error('تم فك البوست لكن Discord لم يُعد slots المتاحة بعد؛ لا تعاد المحاولة قبل تحديث الحالة');
+          log('info', 'apply', `تطبيق ${count} بوست على ${targetGuild.name}`);
+          await withTsRateRetry(`${accountLabel} apply moved boosts`, () => enqueueTsAccount(email, () => ts.applyPremiumGuildSubscriptions({ token, guildId: target, slotIds: availableSlotIds, netOpts }), { label: 'Apply moved Nitro boosts' }), { attempts: 2, minWaitMs: 1000 });
+          const after = await withTsRateRetry(`${accountLabel} verify moved boosts`, () => enqueueTsAccount(email, () => readTsNitroState({ token, client, rateLimiter }), { label: 'Verify moved Nitro boosts' }), { attempts: 2, minWaitMs: 1000 });
+          persistTsNitroState(email, after);
+          const verifiedCount = (after.slots || []).filter(slot => slot.applied && String(slot.guildId) === String(target)).length;
+          if (verifiedCount < count) throw new Error(`تم إرسال التغيير لكن التحقق وجد ${verifiedCount}/${count} بوست فقط`);
+          const movedPackages = updateTsPackagesAfterMove(email, source, target, targetGuild.name, count);
+          log('success', 'complete', `اكتمل النقل والتحقق ${verifiedCount}/${count}`, { confirmed: true, sourceGuildId: source, targetGuildId: target, movedPackages });
+          results[index] = { index, email, displayName, ok: true, verified: true, released, appliedCount: verifiedCount, sourceGuildId: source, targetGuildId: target, targetGuildName: targetGuild.name, movedPackages, state: after, durationMs: Date.now() - startedAt };
+        } catch (e) {
+          const message = redactSecretText(e?.message || String(e)).slice(0, 300);
+          log(released ? 'warn' : 'error', released ? 'partial' : 'failed', released ? `تم فك ${released}/${count} بوست لكن لم يكتمل النقل: ${message}` : message, { confirmed: false, released });
+          results[index] = { index, email, displayName, ok: false, verified: false, partial: released > 0, released, error: message, code: e?.code || (released ? 'NITRO_MOVE_PARTIAL' : 'NITRO_MOVE_FAILED'), durationMs: Date.now() - startedAt };
+        }
+      }
+    };
+    const parallelism = nitroParallelism(req.body?.parallelism, emails.length);
+    await Promise.all(Array.from({ length: parallelism }, worker));
+    const successful = results.filter(result => result?.verified === true).length;
+    ok(res, { total: emails.length, successful, failed: emails.length - successful, results });
+  });
+
   async function executeTsNitroPost(email, { guildId = '', inviteUrl = '', count = 1, months = null } = {}, logContext = {}) {
     const accountEmail = String(email || '').trim().toLowerCase();
     const requestedCount = Math.max(1, Math.min(2, Number(count) || 1));
@@ -2461,7 +2625,7 @@ const ts = require('./lib/trueStudio');
       return value;
     };
     const health = await withTsRateRetry(`${accountLabel} account health`, () => enqueueTsAccount(accountEmail, () => ts.accountHealthProbe({
-      token, netOpts: { client, rateLimiter },
+      token, netOpts: { client, rateLimiter, solveCaptcha: buildSolveCaptcha({ require2Captcha: true }), captchaContext: 'nitro-account-health' },
     }), { label: 'Nitro account health' }), { attempts: 2, minWaitMs: 1000 });
     if (!health?.ready) {
       const error = new Error(health?.message || 'الحساب غير جاهز لتنفيذ عملية Nitro');
@@ -2516,7 +2680,7 @@ const ts = require('./lib/trueStudio');
       token,
       guildId: joinedGuildId,
       slotIds,
-      netOpts: { client, rateLimiter },
+      netOpts: { client, rateLimiter, solveCaptcha: buildSolveCaptcha({ require2Captcha: true }), captchaContext: 'nitro-apply' },
     }), { label: 'Apply Nitro boosts' }), { attempts: 2, minWaitMs: 1000 });
 
     nitroLog('info', 'verify', 'قراءة الحالة النهائية للتحقق');

@@ -64,6 +64,18 @@ async function json(path, options) {
   });
   assert.equal(emptyNitroPreflight.body?.success, false, 'Nitro preflight without accounts should fail safely');
 
+  const emptyMovePreflight = await json('/api/ts/nitro/move-preflight', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ emails: [], count: 1, parallelism: 3 }),
+  });
+  assert.equal(emptyMovePreflight.body?.success, false, 'Nitro move preflight without accounts should fail safely');
+
+  const emptyMove = await json('/api/ts/nitro/move', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ emails: [], targetGuildId: '123456789012345678', confirmed: true }),
+  });
+  assert.equal(emptyMove.body?.success, false, 'Nitro move without accounts should fail safely');
+
   const bulkTokens = await json('/api/ts/accounts/bulk-tokens', {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ tokens: ['smoke-bulk-token-duration-1234567890'], months: 3 }),

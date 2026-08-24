@@ -1,5 +1,5 @@
 const assert = require('assert');
-const { rateLimitInfoFromResponse, createRateLimitGuard } = require('../lib/trueStudio');
+const { rateLimitInfoFromResponse, createRateLimitGuard, deletePremiumGuildSubscription } = require('../lib/trueStudio');
 
 const route = rateLimitInfoFromResponse({
   status: 429,
@@ -52,4 +52,7 @@ const snapshot = guard.snapshot();
 assert.equal(snapshot.routes, 1, 'guard should remember the route');
 assert.equal(snapshot.buckets, 1, 'guard should remember the bucket');
 
-console.log('Botv3 operations logic tests passed');
+Promise.all([
+  assert.rejects(() => deletePremiumGuildSubscription({ token: 'test', guildId: 'bad', subscriptionId: '123456789012345678' }), /Invalid source guild id/),
+  assert.rejects(() => deletePremiumGuildSubscription({ token: 'test', guildId: '123456789012345678', subscriptionId: 'bad' }), /Invalid premium subscription id/),
+]).then(() => console.log('Botv3 operations logic tests passed'));

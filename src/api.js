@@ -96,6 +96,8 @@ window.electronAPI = {
   tsJoinServer: (email, inviteUrl) => apiCall('POST', '/api/ts/join-server', { email, inviteUrl }),
   tsNitroStatus: (email) => apiCall('GET', `/api/ts/nitro/status?email=${encodeURIComponent(email)}`),
   tsNitroPreflight: (emails, count = 1, parallelism = 3) => apiCall('POST', '/api/ts/nitro/preflight', { emails, count, parallelism }),
+  tsNitroMovePreflight: (emails, sourceGuildId = '', targetGuildId = '', count = 1, parallelism = 3) => apiCall('POST', '/api/ts/nitro/move-preflight', { emails, sourceGuildId, targetGuildId, count, parallelism }),
+  tsNitroMove: (emails, sourceGuildId, targetGuildId, inviteUrl, count = 1, parallelism = 3, confirmed = false) => apiCall('POST', '/api/ts/nitro/move', { emails, sourceGuildId, targetGuildId, inviteUrl, count, parallelism, confirmed }),
   tsNitroPost: (email, guildId, inviteUrl, count, months = 1) => apiCall('POST', '/api/ts/nitro/post', { email, guildId, inviteUrl, count, months }),
   tsNitroPostBulk: (emails, guildId, inviteUrl, count, parallelism = 3, months = 1, monthsByEmail = {}) => apiCall('POST', '/api/ts/nitro/post-bulk', { emails, guildId, inviteUrl, count, parallelism, months, monthsByEmail }),
   tsLibrary: (email) => apiCall('GET', `/api/ts/library?email=${encodeURIComponent(email)}`),
