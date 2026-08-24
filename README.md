@@ -30,6 +30,8 @@ The Nitro cooldown display uses the account response from Discord. It does not f
 
 Open **Nitro Boosts**, select multiple saved accounts in the **Accounts to use** list with Ctrl/Cmd-click, choose the number of parallel accounts from 1 to 10, then choose the target server or invite and submit. Each account still uses its own serialized queue and rate limiter. Rate-limited requests are retried safely when Discord provides a retry interval; if the limit persists, that account is reported separately with its retry time while the other accounts continue. The live log uses `[Nitro][account][stage]` entries for clear per-account tracking. The original single-account endpoint remains available at `/api/ts/nitro/post`; the multi-account endpoint is `/api/ts/nitro/post-bulk`.
 
+When importing numbered tokens, choose a Nitro duration in the import card. That duration is saved with every imported account and shown next to the account selector. The Nitro posting flow uses the saved duration automatically; if selected accounts have different saved durations, each account receives its own duration. A manual duration selection in the Nitro card overrides the saved plan for that operation.
+
 ## Security
 
 Account credentials are encrypted at rest using AES-256-GCM. Every secret gets a fresh random IV and authentication tag. Records are stored as an encrypted envelope such as `v1:<iv>:<tag>:<ciphertext>`; plaintext records remain readable only for one-way migration when a write occurs.

@@ -58,6 +58,18 @@ async function json(path, options) {
   });
   assert.equal(missingNitroBulkEmails.body?.success, false, 'Bulk Nitro post without accounts should fail safely');
 
+  const bulkTokens = await json('/api/ts/accounts/bulk-tokens', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ tokens: ['smoke-bulk-token-duration-1234567890'], months: 3 }),
+  });
+  assert.equal(bulkTokens.body?.success, true, 'bulk token import should save successfully');
+  assert.equal(bulkTokens.body?.added?.[0]?.nitroPlanMonths, 3, 'bulk token import should save Nitro duration');
+  const importedAccounts = await json('/api/ts/accounts');
+  const importedAccount = importedAccounts.body?.accounts?.find(account => account.email === bulkTokens.body?.added?.[0]?.email);
+  assert.equal(importedAccount?.nitroPlanMonths, 3, 'saved token should expose its Nitro duration');
+  const deletedBulkTokens = await json('/api/ts/accounts/bulk-tokens', { method: 'DELETE' });
+  assert.equal(deletedBulkTokens.body?.success, true, 'bulk token cleanup should succeed');
+
   const tokenWithoutPassword = await json('/api/ts/accounts', {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ email: 'smoke-token-only@example.invalid', directToken: 'fake-discord-user-token-1234567890' }),

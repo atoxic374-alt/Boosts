@@ -75,7 +75,7 @@ window.electronAPI = {
   tsAccounts: () => apiCall('GET', '/api/ts/accounts'),
   tsDashboard: () => apiCall('GET', '/api/ts/dashboard'),
   tsSaveAccount: (payload) => apiCall('POST', '/api/ts/accounts', payload),
-  tsSaveBulkTokens: (tokens) => apiCall('POST', '/api/ts/accounts/bulk-tokens', { tokens }),
+  tsSaveBulkTokens: (tokens, months = 1) => apiCall('POST', '/api/ts/accounts/bulk-tokens', { tokens, months }),
   tsDeleteBulkTokens: () => apiCall('DELETE', '/api/ts/accounts/bulk-tokens'),
   tsDeleteAccount: (email) => apiCall('DELETE', `/api/ts/accounts/${encodeURIComponent(email)}`),
   tsState: () => apiCall('GET', '/api/ts/state'),
@@ -96,7 +96,7 @@ window.electronAPI = {
   tsJoinServer: (email, inviteUrl) => apiCall('POST', '/api/ts/join-server', { email, inviteUrl }),
   tsNitroStatus: (email) => apiCall('GET', `/api/ts/nitro/status?email=${encodeURIComponent(email)}`),
   tsNitroPost: (email, guildId, inviteUrl, count, months = 1) => apiCall('POST', '/api/ts/nitro/post', { email, guildId, inviteUrl, count, months }),
-  tsNitroPostBulk: (emails, guildId, inviteUrl, count, parallelism = 3, months = 1) => apiCall('POST', '/api/ts/nitro/post-bulk', { emails, guildId, inviteUrl, count, parallelism, months }),
+  tsNitroPostBulk: (emails, guildId, inviteUrl, count, parallelism = 3, months = 1, monthsByEmail = {}) => apiCall('POST', '/api/ts/nitro/post-bulk', { emails, guildId, inviteUrl, count, parallelism, months, monthsByEmail }),
   tsLibrary: (email) => apiCall('GET', `/api/ts/library?email=${encodeURIComponent(email)}`),
   tsResetBot: (appId, email, name, icon) =>
     apiCall('POST', `/api/ts/applications/${encodeURIComponent(appId)}/reset-bot-token`, {

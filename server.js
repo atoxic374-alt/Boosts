@@ -324,6 +324,7 @@ const ts = require('./lib/trueStudio');
       hasDirectToken: !!a.directToken,
       addedAt: a.addedAt || 0,
       verify: a.verify || null,
+      nitroPlanMonths: Number.isFinite(Number(a.nitroPlanMonths)) ? Math.max(1, Math.min(36, Math.floor(Number(a.nitroPlanMonths)))) : null,
       packages: publicTsNitroPackages(a),
     }));
   }
@@ -1450,6 +1451,7 @@ const ts = require('./lib/trueStudio');
   // ── Bulk token import — one token per line, auto-numbered tok-N@local ──
   app.post('/api/ts/accounts/bulk-tokens', (req, res) => {
     const { tokens } = req.body || {};
+    const planMonths = Math.max(1, Math.min(36, Math.floor(Number(req.body?.months) || 1)));
     if (!Array.isArray(tokens) || tokens.length === 0)
       return fail(res, new Error('لا توجد توكنات'));
     const valid = tokens.map(tk => (typeof tk === 'string' ? tk.trim() : '')).filter(tk => tk.length > 10);
@@ -1468,8 +1470,9 @@ const ts = require('./lib/trueStudio');
         d.tsAccounts.push(rec);
       }
       rec.directToken = encrypt(rawToken);
+      rec.nitroPlanMonths = planMonths;
       rec.addedAt = Date.now();
-      added.push({ email, num: d.tsBulkTokenCounter });
+      added.push({ email, num: d.tsBulkTokenCounter, nitroPlanMonths: planMonths });
     }
     writeData(d);
     ok(res, { added, count: added.length });
@@ -2307,9 +2310,11 @@ const ts = require('./lib/trueStudio');
     }
   });
 
-  async function executeTsNitroPost(email, { guildId = '', inviteUrl = '', count = 1, months = 1 } = {}, logContext = {}) {
+  async function executeTsNitroPost(email, { guildId = '', inviteUrl = '', count = 1, months = null } = {}, logContext = {}) {
     const accountEmail = String(email || '').trim().toLowerCase();
     const requestedCount = Math.max(1, Math.min(2, Number(count) || 1));
+    const accountPlanMonths = Number(tsFindAccount(accountEmail)?.nitroPlanMonths);
+    const packageMonths = Math.max(1, Math.min(36, Math.floor(Number(months) || accountPlanMonths || 1)));
     if (!accountEmail) throw new Error('email required');
 
     const position = Number(logContext.position || 1);
@@ -2319,7 +2324,7 @@ const ts = require('./lib/trueStudio');
       operation: 'nitro_post', confirmed: false, stage, account: accountEmail, ...extra,
     });
 
-    nitroLog('info', 'start', `بدء التنفيذ (${requestedCount} بوست)`);
+    nitroLog('info', 'start', `بدء التنفيذ (${requestedCount} بوست · ${packageMonths} شهر)`);
     const { token, client } = await tsGetToken(accountEmail);
     const rateLimiter = makeTsRateLimiter('nitro-post', ({ type, waitMs, reason }) => {
       if (type === 'rate_limit_wait') nitroLog('warn', 'rate_limit', `انتظار ${Math.max(1, Math.ceil(Number(waitMs || 0) / 1000))}s قبل الطلب التالي (${reason || 'Discord'})`);
@@ -2393,7 +2398,7 @@ const ts = require('./lib/trueStudio');
       const after = await readState('Verify Nitro boosts');
       const appliedCount = after.slots.filter(s => s.applied && s.guildId === joinedGuildId).length;
       const verified = appliedCount >= requestedCount;
-      const packageRecord = verified ? recordTsNitroPackage(accountEmail, { months, guildId: joinedGuildId, guildName: targetGuild.name, boostCount: requestedCount }) : null;
+      const packageRecord = verified ? recordTsNitroPackage(accountEmail, { months: packageMonths, guildId: joinedGuildId, guildName: targetGuild.name, boostCount: requestedCount }) : null;
     nitroLog(verified ? 'success' : 'warn', verified ? 'complete' : 'unverified', `${verified ? 'تم التحقق من وضع البوستات' : 'تم إرسال الطلب لكن تعذر التحقق الكامل'} (${appliedCount}/${requestedCount})`, { guild: joinedGuildId, confirmed: verified });
     return { email: accountEmail, verified, guild: targetGuild, requestedCount, appliedCount, package: packageRecord, state: after };
   }
@@ -2420,7 +2425,7 @@ const ts = require('./lib/trueStudio');
         try {
           results[index] = {
             index,
-            ...(await executeTsNitroPost(email, options, { position: index + 1, total: emails.length })),
+            ...(await executeTsNitroPost(email, { ...options, months: options.monthsByEmail?.[email] ?? options.months }, { position: index + 1, total: emails.length })),
             ok: true,
             rateLimited: false,
             durationMs: Date.now() - startedAt,

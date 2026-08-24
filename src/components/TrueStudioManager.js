@@ -81,6 +81,8 @@ export class TrueStudioManager {
     this._resumeInfo = null;
     this.pfp = { avatar: null, banner: null, updatedAt: 0 };
     this.bulkTokensText = '';         // raw textarea content for bulk token import
+    this.bulkNitroMonths = 1;
+    this.nitroPackageMonthsTouched = false;
     this.serverInviteUrl = '';
     this.serverJoinResult = null;
     this.serverCaptchaVerification = null;
@@ -1340,6 +1342,11 @@ export class TrueStudioManager {
         </div>
         <div class="ts-field">
           <div class="ts-field-hint">${t('ts.bulk_tokens_hint')}</div>
+          <div class="ts-field" style="margin-top:8px;max-width:260px;">
+            <div class="ts-field-label">${escapeHtml(t('ts.bulk_tokens_nitro_months'))}</div>
+            <select id="ts-bulk-nitro-months" class="ts-input">${[1, 2, 3, 6, 12, 24, 36].map(value => `<option value="${value}" ${value === Number(this.bulkNitroMonths) ? 'selected' : ''}>${value} ${escapeHtml(t('ts.nitro_months'))}</option>`).join('')}</select>
+            <div class="ts-field-hint">${escapeHtml(t('ts.bulk_tokens_nitro_hint'))}</div>
+          </div>
           <textarea id="ts-bulk-tokens"
             class="ts-input ltr"
             style="font-family:monospace;font-size:12px;resize:vertical;min-height:90px;line-height:1.5;"
@@ -1360,8 +1367,9 @@ export class TrueStudioManager {
     const v = a.verify;
     let badge = '';
     if (a.hasDirectToken) badge += ' • token';
+    if (a.nitroPlanMonths) badge += ` • Nitro ${a.nitroPlanMonths}${t('ts.nitro_months_short')}`;
     if (v) badge += v.ok ? '  [OK]' : '  [CHECK]';
-    return escapeHtml(a.email) + badge;
+    return escapeHtml(a.email) + escapeHtml(badge);
   }
 
   _verifyLabel(sel) {
@@ -4371,6 +4379,10 @@ export class TrueStudioManager {
     $('#ts-nitro-post-open')?.addEventListener('click', () => this.openNitroPost());
     $('#ts-nitro-accounts')?.addEventListener('change', (e) => {
       this.nitroSelectedEmails = [...e.target.selectedOptions].map(option => option.value);
+      if (!this.nitroPackageMonthsTouched) {
+        const plans = this._getNitroSelectedEmails().map(email => this.accounts.find(a => String(a.email || '').toLowerCase() === email)?.nitroPlanMonths).filter(Boolean);
+        if (plans.length && plans.every(value => Number(value) === Number(plans[0]))) this.nitroPackageMonths = Number(plans[0]);
+      }
       this.nitroBulkResults = [];
       this.nitroPostResult = null;
       this.render();
@@ -4385,7 +4397,10 @@ export class TrueStudioManager {
     $('#ts-nitro-guild')?.addEventListener('change', (e) => { this.nitroSelectedGuildId = e.target.value; this.nitroInviteUrl = ''; this.render(); });
     $('#ts-nitro-invite')?.addEventListener('input', (e) => { this.nitroInviteUrl = e.target.value; if (e.target.value.trim()) { this.nitroSelectedGuildId = ''; } });
     $('#ts-nitro-count')?.addEventListener('change', (e) => { this.nitroPostCount = Math.max(1, Math.min(2, Number(e.target.value) || 1)); });
-    $('#ts-nitro-package-months')?.addEventListener('change', (e) => { this.nitroPackageMonths = Math.min(36, Math.max(1, Number(e.target.value) || 1)); });
+    $('#ts-nitro-package-months')?.addEventListener('change', (e) => {
+      this.nitroPackageMonths = Math.min(36, Math.max(1, Number(e.target.value) || 1));
+      this.nitroPackageMonthsTouched = true;
+    });
     $('#ts-nitro-post-submit')?.addEventListener('click', () => this.submitNitroPost());
     $('#ts-dashboard-refresh')?.addEventListener('click', () => this.loadDashboard());
     $('#ts-dashboard-health-start')?.addEventListener('click', () => this.testAllAccounts());
@@ -4410,6 +4425,9 @@ export class TrueStudioManager {
         btn.disabled = n === 0;
         btn.textContent = t('ts.bulk_tokens_save') + (n > 0 ? ` (${n})` : '');
       }
+    });
+    $('#ts-bulk-nitro-months')?.addEventListener('change', (e) => {
+      this.bulkNitroMonths = Math.min(36, Math.max(1, Number(e.target.value) || 1));
     });
     $('#ts-bulk-save')?.addEventListener('click', () => this.saveBulkTokens());
     $('#ts-bulk-delete')?.addEventListener('click', () => this.deleteBulkTokens());
@@ -4714,6 +4732,10 @@ export class TrueStudioManager {
     this.nitroState = null;
     this.nitroStateError = '';
     this.nitroSelectedEmails = this._getNitroSelectedEmails().length ? this._getNitroSelectedEmails() : [String(this.selectedEmail).toLowerCase()];
+    if (!this.nitroPackageMonthsTouched) {
+      const plans = this._getNitroSelectedEmails().map(email => this.accounts.find(a => String(a.email || '').toLowerCase() === email)?.nitroPlanMonths).filter(Boolean);
+      if (plans.length && plans.every(value => Number(value) === Number(plans[0]))) this.nitroPackageMonths = Number(plans[0]);
+    }
     this.nitroBulkResults = [];
     this.nitroPostResult = null;
     this.render();
@@ -4753,13 +4775,19 @@ export class TrueStudioManager {
     this.render();
     try {
       if (emails.length === 1) {
-        const r = await window.electronAPI.tsNitroPost(emails[0], guildId, inviteUrl, count, this.nitroPackageMonths);
+        const accountPlan = this.accounts.find(account => String(account.email || '').toLowerCase() === emails[0])?.nitroPlanMonths;
+        const months = this.nitroPackageMonthsTouched ? this.nitroPackageMonths : (accountPlan || this.nitroPackageMonths);
+        const r = await window.electronAPI.tsNitroPost(emails[0], guildId, inviteUrl, count, months);
         this.nitroPostResult = { ok: r?.verified === true, message: r?.verified ? t('ts.nitro_post_verified') : t('ts.nitro_post_unverified') };
         if (r?.state) this.nitroState = r.state;
         else await this.loadNitroState();
       } else {
         const parallelism = Math.min(10, Math.max(1, Number(this.nitroParallelism) || 3));
-        const r = await window.electronAPI.tsNitroPostBulk(emails, guildId, inviteUrl, count, parallelism, this.nitroPackageMonths);
+        const monthsByEmail = Object.fromEntries(emails.map(email => {
+          const plan = this.accounts.find(account => String(account.email || '').toLowerCase() === email)?.nitroPlanMonths;
+          return [email, this.nitroPackageMonthsTouched ? this.nitroPackageMonths : (plan || this.nitroPackageMonths)];
+        }));
+        const r = await window.electronAPI.tsNitroPostBulk(emails, guildId, inviteUrl, count, parallelism, this.nitroPackageMonths, monthsByEmail);
         this.nitroBulkResults = Array.isArray(r?.results) ? r.results : [];
         const verified = this.nitroBulkResults.filter(item => item.verified === true).length;
         const successful = this.nitroBulkResults.filter(item => item.ok === true).length;
@@ -4841,7 +4869,7 @@ export class TrueStudioManager {
       return;
     }
     try {
-      const r = await window.electronAPI.tsSaveBulkTokens(tokens);
+      const r = await window.electronAPI.tsSaveBulkTokens(tokens, this.bulkNitroMonths);
       if (!r.success) throw new Error(r.error || 'Save failed');
       const first = r.added[0];
       const last  = r.added[r.added.length - 1];
