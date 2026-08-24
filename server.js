@@ -1413,6 +1413,64 @@ const ts = require('./lib/trueStudio');
     ok(res, { removed });
   });
 
+  app.post('/api/ts/accounts/health-check', async (req, res) => {
+    const requested = Array.isArray(req.body?.emails) ? req.body.emails : tsAccountsPublic().map(a => a.email);
+    const emails = [...new Set(requested.map(v => String(v || '').trim().toLowerCase()).filter(Boolean))].slice(0, 100);
+    if (!emails.length) return fail(res, new Error('لا توجد حسابات للفحص'));
+    const jobId = `health-${Date.now().toString(36)}`;
+    const results = [];
+    let cursor = 0;
+    const worker = async () => {
+      while (true) {
+        const index = cursor++;
+        if (index >= emails.length) return;
+        const email = emails[index];
+        const startedAt = Date.now();
+        tsLog('info', `Health Check: بدء فحص ${email} (${index + 1}/${emails.length})`, {
+          operation: 'account_health_check', stage: 'start', confirmed: false, jobId, account: email,
+        });
+        try {
+          const value = await enqueueTsAccount(email, async () => {
+            const { token, client } = await tsGetToken(email);
+            const rateLimiter = makeTsRateLimiter('account-health-check', null, { minimumGapMs: 1200, account: email });
+            const health = await ts.accountHealthProbe({
+              token,
+              netOpts: { client, rateLimiter, solveCaptcha: buildSolveCaptcha({ require2Captcha: true }), captchaContext: 'account-health-check' },
+            });
+            return {
+              ok: health.ready === true,
+              status: health.classification || (health.ready ? 'ok' : 'unknown'),
+              message: String(health.message || '').slice(0, 240),
+              retryAfter: Number(health.retryAfter || 0),
+              rateLimited: health.rateLimited === true,
+            };
+          }, { label: 'Account health check' });
+          const result = { index, email, ...value, durationMs: Date.now() - startedAt };
+          results.push(result);
+          tsLog(result.ok ? 'success' : 'warn', `Health Check: ${email} — ${result.status}`, {
+            operation: 'account_health_check', stage: 'complete', confirmed: result.ok, jobId, account: email, status: result.status, durationMs: result.durationMs,
+          });
+        } catch (e) {
+          const result = { index, email, ok: false, status: e.code || 'check_failed', message: redactSecretText(e.message || String(e)).slice(0, 240), durationMs: Date.now() - startedAt };
+          results.push(result);
+          tsLog('error', `Health Check: ${email} — ${result.message}`, {
+            operation: 'account_health_check', stage: 'failed', confirmed: false, jobId, account: email, status: result.status, durationMs: result.durationMs,
+          });
+        }
+      }
+    };
+    const workerCount = Math.min(3, emails.length);
+    await Promise.all(Array.from({ length: workerCount }, worker));
+    results.sort((a, b) => a.index - b.index);
+    ok(res, {
+      jobId,
+      total: results.length,
+      passed: results.filter(r => r.ok).length,
+      failed: results.filter(r => !r.ok).length,
+      results: results.map(({ index, ...result }) => result),
+    });
+  });
+
   app.delete('/api/ts/accounts/:email', (req, res) => {
     const target = String(req.params.email || '').toLowerCase();
     const d = ensureData();

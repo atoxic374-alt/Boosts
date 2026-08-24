@@ -4902,13 +4902,15 @@ export class TrueStudioManager {
   async testAllAccounts() {
     const btn = this.contentArea.querySelector('#ts-acct-test-all');
     if (!this.accounts.length || btn?.disabled) return;
-    if (btn) btn.disabled = true;
+    const emails = this.accounts.map(account => account.email).filter(Boolean);
+    if (btn) { btn.disabled = true; btn.textContent = 'جارٍ فحص الحسابات…'; }
     try {
-      for (const account of this.accounts) {
-        try { await window.electronAPI.tsTestAccount(account.email); } catch (_) {}
-      }
+      const result = await window.electronAPI.tsAccountsHealthCheck(emails);
+      if (!result?.success) throw new Error(result?.error || 'فشل بدء فحص الحسابات');
       await this.refresh();
-      showNotification('اكتمل فحص الحسابات', 'success');
+      showNotification(`اكتمل الفحص: ${result.passed || 0} ناجح · ${result.failed || 0} يحتاج مراجعة`, result.failed ? 'warn' : 'success');
+    } catch (e) {
+      showNotification(e.message || 'فشل فحص الحسابات', 'error');
     } finally { this.render(); }
   }
 
