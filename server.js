@@ -1454,7 +1454,142 @@ const ts = require('./lib/trueStudio');
     } catch (e) { fail(res, e); }
   });
 
-  app.post('/api/ts/accounts/health-check', async (req, res) => {
+  function tsHealthJobs() {
+    const s = tsSession();
+    if (!(s.healthJobs instanceof Map)) s.healthJobs = new Map();
+    return s.healthJobs;
+  }
+
+  function tsHealthAccountLabel(email) {
+    const normalized = String(email || '').toLowerCase();
+    const index = tsAccountsRaw().findIndex(a => String(a.email || '').toLowerCase() === normalized);
+    if (index >= 0 && isTsBulkTokenAccount(normalized)) return `account-${index + 1}`;
+    return normalized.replace(/^(.).*(?=@)/, '$1***') || `account-${index + 1}`;
+  }
+
+  function tsPublicHealthJob(job) {
+    if (!job) return null;
+    return {
+      jobId: job.jobId,
+      state: job.state,
+      total: job.total,
+      completed: job.completed,
+      passed: job.passed,
+      failed: job.failed,
+      cancelled: job.cancelled === true,
+      startedAt: job.startedAt,
+      finishedAt: job.finishedAt || null,
+      results: [...job.results].sort((a, b) => a.index - b.index).map(result => ({
+        accountId: `account-${result.index + 1}`,
+        label: tsHealthAccountLabel(result.email),
+        ok: result.ok === true,
+        status: result.status,
+        message: redactSecretText(result.message || '').slice(0, 240),
+        durationMs: Number(result.durationMs || 0),
+        checkedAt: result.checkedAt || null,
+      })),
+    };
+  }
+
+  async function runTsHealthJob(job) {
+    const worker = async () => {
+      while (true) {
+        if (job.cancelled) return;
+        const index = job.cursor++;
+        if (index >= job.emails.length) return;
+        const email = job.emails[index];
+        const startedAt = Date.now();
+        const label = tsHealthAccountLabel(email);
+        tsLog('info', `Health Check: بدء فحص ${label} (${index + 1}/${job.total})`, {
+          operation: 'account_health_check', stage: 'start', confirmed: false, jobId: job.jobId, account: label,
+        });
+        let result;
+        try {
+          const value = await enqueueTsAccount(email, async () => {
+            const { token, client } = await tsGetToken(email);
+            const rateLimiter = makeTsRateLimiter('account-health-check', null, { minimumGapMs: 1200, account: label });
+            const health = await ts.accountHealthProbe({
+              token,
+              netOpts: { client, rateLimiter, solveCaptcha: buildSolveCaptcha({ require2Captcha: true }), captchaContext: 'account-health-check' },
+            });
+            return {
+              ok: health.ready === true,
+              status: health.classification || (health.ready ? 'ok' : 'unknown'),
+              message: redactSecretText(health.message || '').slice(0, 240),
+              rateLimited: health.rateLimited === true,
+            };
+          }, { label: 'Account health check' });
+          result = { index, email, ...value, durationMs: Date.now() - startedAt, checkedAt: Date.now() };
+        } catch (e) {
+          result = { index, email, ok: false, status: e.code || 'check_failed', message: redactSecretText(e.message || String(e)).slice(0, 240), durationMs: Date.now() - startedAt, checkedAt: Date.now() };
+        }
+        const d = ensureData();
+        const rec = tsFindAccount(email);
+        if (rec) {
+          rec.verify = { ...(rec.verify || {}), ok: result.ok === true, status: result.status, message: result.message, at: result.checkedAt };
+          writeData(d);
+        }
+        job.results.push(result);
+        job.completed += 1;
+        if (result.ok) job.passed += 1; else job.failed += 1;
+        tsLog(result.ok ? 'success' : 'warn', `Health Check: ${label} — ${result.status}`, {
+          operation: 'account_health_check', stage: 'complete', confirmed: result.ok, jobId: job.jobId, account: label, status: result.status, durationMs: result.durationMs,
+        });
+        pushTsEvent('ts_health_check_progress', { jobId: job.jobId, healthCheck: tsPublicHealthJob(job) });
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(3, job.emails.length) }, worker));
+    job.state = job.cancelled ? 'cancelled' : 'completed';
+    job.finishedAt = Date.now();
+    pushTsEvent('ts_health_check_finished', { jobId: job.jobId, healthCheck: tsPublicHealthJob(job) });
+  }
+
+  function startTsHealthJob(emails) {
+    const job = { jobId: `health-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`, state: 'running', emails, total: emails.length, completed: 0, passed: 0, failed: 0, cursor: 0, results: [], cancelled: false, startedAt: Date.now() };
+    tsHealthJobs().set(job.jobId, job);
+    const uid = currentUserId();
+    Promise.resolve().then(() => withUser(uid, () => runTsHealthJob(job))).catch((e) => {
+      job.state = 'failed'; job.finishedAt = Date.now();
+      tsLog('error', `Health Check: فشلت المهمة — ${redactSecretText(e.message || String(e))}`, { operation: 'account_health_check', stage: 'job_failed', confirmed: false, jobId: job.jobId });
+      pushTsEvent('ts_health_check_finished', { jobId: job.jobId, healthCheck: tsPublicHealthJob(job) });
+    });
+    return job;
+  }
+
+  app.post('/api/ts/accounts/health-check', (req, res) => {
+    const requested = Array.isArray(req.body?.emails) ? req.body.emails : tsAccountsPublic().map(a => a.email);
+    const emails = [...new Set(requested.map(v => String(v || '').trim().toLowerCase()).filter(email => tsFindAccount(email)))].slice(0, 100);
+    if (!emails.length) return fail(res, new Error('لا توجد حسابات صالحة للفحص'));
+    const job = startTsHealthJob(emails);
+    tsLog('info', `Health Check: بدأت مهمة ${job.jobId} لعدد ${job.total} حساب`, { operation: 'account_health_check', stage: 'job_started', confirmed: false, jobId: job.jobId });
+    ok(res, { job: tsPublicHealthJob(job) });
+  });
+
+  app.get('/api/ts/accounts/health-check/:jobId', (req, res) => {
+    const job = tsHealthJobs().get(String(req.params.jobId || ''));
+    if (!job) return fail(res, new Error('Health Check job not found'));
+    ok(res, { job: tsPublicHealthJob(job) });
+  });
+
+  app.post('/api/ts/accounts/health-check/:jobId/stop', (req, res) => {
+    const job = tsHealthJobs().get(String(req.params.jobId || ''));
+    if (!job) return fail(res, new Error('Health Check job not found'));
+    job.cancelled = true;
+    tsLog('warn', `Health Check: طلب إيقاف المهمة ${job.jobId}`, { operation: 'account_health_check', stage: 'stop_requested', confirmed: false, jobId: job.jobId });
+    ok(res, { job: tsPublicHealthJob(job) });
+  });
+
+  app.post('/api/ts/accounts/health-check/:jobId/retry', (req, res) => {
+    const previous = tsHealthJobs().get(String(req.params.jobId || ''));
+    if (!previous) return fail(res, new Error('Health Check job not found'));
+    const retryEmails = previous.results.filter(result => !result.ok).map(result => result.email).filter(email => tsFindAccount(email));
+    if (!retryEmails.length) return fail(res, new Error('لا توجد حسابات فاشلة لإعادة الفحص'));
+    const job = startTsHealthJob([...new Set(retryEmails)].slice(0, 100));
+    tsLog('info', `Health Check: إعادة فحص ${job.total} حساب`, { operation: 'account_health_check', stage: 'retry_started', confirmed: false, jobId: job.jobId });
+    ok(res, { job: tsPublicHealthJob(job) });
+  });
+
+  app.post('/api/ts/accounts/health-check-legacy', async (req, res) => {
     const requested = Array.isArray(req.body?.emails) ? req.body.emails : tsAccountsPublic().map(a => a.email);
     const emails = [...new Set(requested.map(v => String(v || '').trim().toLowerCase()).filter(Boolean))].slice(0, 100);
     if (!emails.length) return fail(res, new Error('لا توجد حسابات للفحص'));

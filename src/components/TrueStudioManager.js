@@ -96,6 +96,8 @@ export class TrueStudioManager {
     this.dashboardSelectedId = null;
     this.dashboardLoading = false;
     this.dashboardError = '';
+    this.healthJob = null;
+    this.healthJobInFlight = false;
     this._nitroTicker = null;
   }
 
@@ -206,6 +208,11 @@ export class TrueStudioManager {
           }
           if (data.type === 'ts_captcha_resolved' || data.type === 'ts_captcha_cancelled' || data.type === 'ts_captcha_timeout') {
             this._closeCaptchaModal();
+          }
+          if (data.type === 'ts_health_check_progress' || data.type === 'ts_health_check_finished') {
+            this.healthJob = data.healthCheck || this.healthJob;
+            this.render();
+            if (data.type === 'ts_health_check_finished') this.loadDashboard();
           }
           // ── Reset-All SSE events ─────────────────────────
           if (data.type === 'ts_reset_all_progress' && data.resetAll) {
@@ -734,9 +741,13 @@ export class TrueStudioManager {
     const selected = accounts.find(a => a.id === this.dashboardSelectedId) || null;
     const maxBoosts = Math.max(1, ...accounts.map(a => Number(a.nitro?.availableSlots) || 0));
     const lastUpdated = d.generatedAt ? new Date(d.generatedAt).toLocaleString('ar-SA') : '—';
+    const job = this.healthJob;
+    const jobRunning = job?.state === 'running';
+    const jobProgress = job ? Math.min(100, Math.round((Number(job.completed || 0) / Math.max(1, Number(job.total || 0))) * 100)) : 0;
     return `<section class="ts-dashboard" id="ts-dashboard">
-      <div class="ts-dashboard-head"><div><span class="ts-dashboard-kicker">ACCOUNT TELEMETRY</span><h3>${escapeHtml(t('ts.dashboard_title') || 'لوحة حالة الحسابات')}</h3><p>${escapeHtml(t('ts.dashboard_hint') || 'ملخص مباشر للاتصال وNitro والكول داون بدون عرض التوكنات.')}</p>${this.dashboardError ? `<div class="ts-dashboard-error">${escapeHtml(this.dashboardError)}</div>` : ''}</div><div class="ts-dashboard-actions"><span class="ts-dashboard-updated">${escapeHtml(t('ts.dashboard_updated') || 'آخر تحديث')}: ${escapeHtml(lastUpdated)}</span><button class="ts-btn ts-btn-xs" id="ts-dashboard-refresh">${escapeHtml(this.dashboardLoading ? 'جارٍ التحديث…' : (t('ts.dashboard_refresh') || 'تحديث'))}</button></div></div>
+      <div class="ts-dashboard-head"><div><span class="ts-dashboard-kicker">ACCOUNT TELEMETRY</span><h3>${escapeHtml(t('ts.dashboard_title') || 'لوحة حالة الحسابات')}</h3><p>${escapeHtml(t('ts.dashboard_hint') || 'ملخص مباشر للاتصال وNitro والكول داون بدون عرض التوكنات.')}</p>${this.dashboardError ? `<div class="ts-dashboard-error">${escapeHtml(this.dashboardError)}</div>` : ''}</div><div class="ts-dashboard-actions"><span class="ts-dashboard-updated">${escapeHtml(t('ts.dashboard_updated') || 'آخر تحديث')}: ${escapeHtml(lastUpdated)}</span><button class="ts-btn ts-btn-xs mint" id="ts-dashboard-health-start" ${!this.accounts.length || jobRunning ? 'disabled' : ''}>فحص كل الحسابات</button><button class="ts-btn ts-btn-xs" id="ts-dashboard-refresh">${escapeHtml(this.dashboardLoading ? 'جارٍ التحديث…' : (t('ts.dashboard_refresh') || 'تحديث'))}</button></div></div>
       <div class="ts-dashboard-stats"><div><b>${c.total}</b><span>${escapeHtml(t('ts.dashboard_total') || 'الإجمالي')}</span></div><div class="good"><b>${c.ok}</b><span>${escapeHtml(t('ts.dashboard_ok') || 'متصل')}</span></div><div class="bad"><b>${c.failed}</b><span>${escapeHtml(t('ts.dashboard_failed') || 'فشل')}</span></div><div class="warn"><b>${c.rateLimited}</b><span>${escapeHtml(t('ts.dashboard_limited') || 'محدود')}</span></div><div><b>${c.availableBoosts}</b><span>${escapeHtml(t('ts.dashboard_boosts') || 'بوست متاح')}</span></div><div class="warn"><b>${c.cooldown}</b><span>${escapeHtml(t('ts.dashboard_cooldown') || 'Cooldown')}</span></div></div>
+      ${job ? `<div class="ts-health-job ${jobRunning ? 'running' : job.state === 'cancelled' ? 'cancelled' : 'done'}"><div class="ts-health-job-head"><strong>Health Check · ${escapeHtml(job.jobId || '')}</strong><span>${job.completed || 0}/${job.total || 0} · ${jobProgress}%</span></div><div class="ts-health-progress"><i style="width:${jobProgress}%"></i></div><div class="ts-health-job-actions"><span>${jobRunning ? 'الفحص يعمل الآن' : job.state === 'cancelled' ? 'تم إيقاف الفحص' : `اكتمل: ${job.passed || 0} ناجح · ${job.failed || 0} فشل`}</span>${jobRunning ? `<button class="ts-btn ts-btn-xs danger" id="ts-health-stop">إيقاف</button>` : job.failed ? `<button class="ts-btn ts-btn-xs" id="ts-health-retry">إعادة فحص الفاشل</button>` : ''}</div></div>` : ''}
       <div class="ts-dashboard-charts"><div class="ts-dashboard-chart ts-dashboard-donut"><div class="ts-dashboard-chart-title">${escapeHtml(t('ts.dashboard_status_chart') || 'توزيع الحالات')}</div><div class="ts-donut" style="--ok:${c.total ? Math.round(c.ok / c.total * 100) : 0}%;--failed:${c.total ? Math.round(c.failed / c.total * 100) : 0}%;"><span>${c.total}</span></div><div class="ts-dashboard-legend"><span><i class="ok"></i>${escapeHtml(t('ts.dashboard_ok') || 'متصل')} ${c.ok}</span><span><i class="bad"></i>${escapeHtml(t('ts.dashboard_failed') || 'فشل')} ${c.failed}</span><span><i class="neutral"></i>${escapeHtml(t('ts.dashboard_unchecked') || 'غير مفحوص')} ${c.unchecked}</span></div></div><div class="ts-dashboard-chart"><div class="ts-dashboard-chart-title">${escapeHtml(t('ts.dashboard_boost_chart') || 'البوستات المتاحة حسب الحساب')}</div><div class="ts-dashboard-bars">${accounts.slice(0, 12).map(a => `<div class="ts-dashboard-bar-row"><span title="${escapeAttr(a.label)}">${escapeHtml(a.label)}</span><i><b style="width:${Math.min(100, (Number(a.nitro?.availableSlots) || 0) / maxBoosts * 100)}%"></b></i><em>${Number(a.nitro?.availableSlots) || 0}</em></div>`).join('') || `<small>${escapeHtml(t('ts.dashboard_no_data') || 'لا توجد بيانات بعد')}</small>`}</div></div></div>
       <div class="ts-dashboard-table-head"><strong>${escapeHtml(t('ts.dashboard_accounts') || 'تفاصيل الحسابات')}</strong><select id="ts-dashboard-filter" class="ts-input"><option value="all" ${this.dashboardFilter === 'all' ? 'selected' : ''}>الكل</option><option value="ok" ${this.dashboardFilter === 'ok' ? 'selected' : ''}>متصل</option><option value="failed" ${this.dashboardFilter === 'failed' ? 'selected' : ''}>فشل</option><option value="unchecked" ${this.dashboardFilter === 'unchecked' ? 'selected' : ''}>غير مفحوص</option><option value="boosts" ${this.dashboardFilter === 'boosts' ? 'selected' : ''}>لديه بوست</option><option value="cooldown" ${this.dashboardFilter === 'cooldown' ? 'selected' : ''}>Cooldown</option></select></div>
       <div class="ts-dashboard-table"><div class="ts-dashboard-row ts-dashboard-row-head"><span>الحساب</span><span>الحالة</span><span>Nitro / Boosts</span><span>Cooldown</span><span>آخر فحص</span></div>${filtered.map(a => { const cd = a.nitro?.cooldown?.active ? a.nitro.cooldown.endsAt : a.nitro?.nextSlotCooldownAt; const left = cd && Date.parse(cd) > Date.now() ? this._fmtNitroRemaining(Date.parse(cd) - Date.now()) : 'جاهز'; return `<button class="ts-dashboard-row ${a.id === this.dashboardSelectedId ? 'selected' : ''}" data-dashboard-select="${escapeAttr(a.id)}"><span><b>${escapeHtml(a.label)}</b>${a.username ? `<small>${escapeHtml(a.username)}</small>` : ''}</span><span class="ts-dashboard-status ${a.ok ? 'ok' : (a.status === 'unchecked' ? 'neutral' : 'bad')}">${escapeHtml(this._dashboardStatusLabel(a.status))}</span><span>${a.nitro?.availableSlots == null ? '—' : `${a.nitro.availableSlots} / ${a.nitro.totalSlots ?? '—'}`}</span><span>${escapeHtml(left)}</span><span>${a.lastCheckedAt ? escapeHtml(new Date(a.lastCheckedAt).toLocaleString('ar-SA')) : '—'}</span></button>`; }).join('') || `<div class="ts-dashboard-empty">${escapeHtml(t('ts.dashboard_no_matches') || 'لا توجد حسابات مطابقة')}</div>`}</div>
@@ -4315,11 +4326,14 @@ export class TrueStudioManager {
     $('#ts-nitro-count')?.addEventListener('change', (e) => { this.nitroPostCount = Math.max(1, Math.min(2, Number(e.target.value) || 1)); });
     $('#ts-nitro-post-submit')?.addEventListener('click', () => this.submitNitroPost());
     $('#ts-dashboard-refresh')?.addEventListener('click', () => this.loadDashboard());
+    $('#ts-dashboard-health-start')?.addEventListener('click', () => this.testAllAccounts());
     $('#ts-dashboard-filter')?.addEventListener('change', (e) => { this.dashboardFilter = e.target.value || 'all'; this.render(); });
     this.contentArea.querySelectorAll('[data-dashboard-select]').forEach((row) => row.addEventListener('click', () => {
       this.dashboardSelectedId = row.getAttribute('data-dashboard-select') || null;
       this.render();
     }));
+    $('#ts-health-stop')?.addEventListener('click', () => this.stopHealthCheck());
+    $('#ts-health-retry')?.addEventListener('click', () => this.retryHealthCheck());
 
     $('#ts-email')?.addEventListener('input', (e) => this.form.email = e.target.value.trim());
     $('#ts-password')?.addEventListener('input', (e) => this.form.password = e.target.value);
@@ -4954,19 +4968,42 @@ export class TrueStudioManager {
   }
 
   async testAllAccounts() {
-    const btn = this.contentArea.querySelector('#ts-acct-test-all');
-    if (!this.accounts.length || btn?.disabled) return;
+    const buttons = [...this.contentArea.querySelectorAll('#ts-acct-test-all, #ts-dashboard-health-start')];
+    if (!this.accounts.length || buttons.some(button => button.disabled) || this.healthJob?.state === 'running') return;
     const emails = this.accounts.map(account => account.email).filter(Boolean);
-    if (btn) { btn.disabled = true; btn.textContent = 'جارٍ فحص الحسابات…'; }
+    buttons.forEach(button => { button.disabled = true; button.textContent = 'جارٍ بدء الفحص…'; });
+    this.healthJobInFlight = true;
     try {
       const result = await window.electronAPI.tsAccountsHealthCheck(emails);
-      if (!result?.success) throw new Error(result?.error || 'فشل بدء فحص الحسابات');
-      await this.refresh();
-      await this.loadDashboard();
-      showNotification(`اكتمل الفحص: ${result.passed || 0} ناجح · ${result.failed || 0} يحتاج مراجعة`, result.failed ? 'warn' : 'success');
+      if (!result?.success || !result.job) throw new Error(result?.error || 'فشل بدء فحص الحسابات');
+      this.healthJob = result.job;
+      this.dashboardError = '';
+      this.render();
     } catch (e) {
       showNotification(e.message || 'فشل فحص الحسابات', 'error');
-    } finally { this.render(); }
+      this.render();
+    } finally { this.healthJobInFlight = false; }
+  }
+
+  async stopHealthCheck() {
+    const jobId = this.healthJob?.jobId;
+    if (!jobId || this.healthJob?.state !== 'running') return;
+    try {
+      const result = await window.electronAPI.tsStopAccountsHealth(jobId);
+      this.healthJob = result.job || this.healthJob;
+      this.render();
+    } catch (e) { showNotification(e.message || 'تعذر إيقاف الفحص', 'error'); }
+  }
+
+  async retryHealthCheck() {
+    const jobId = this.healthJob?.jobId;
+    if (!jobId || this.healthJob?.state === 'running') return;
+    try {
+      const result = await window.electronAPI.tsRetryAccountsHealth(jobId);
+      if (!result?.success || !result.job) throw new Error(result?.error || 'تعذر إعادة الفحص');
+      this.healthJob = result.job;
+      this.render();
+    } catch (e) { showNotification(e.message || 'تعذر إعادة فحص الحسابات', 'error'); }
   }
 
   async pauseSession() {
