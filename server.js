@@ -283,6 +283,39 @@ const ts = require('./lib/trueStudio');
     return d.tsAccounts;
   }
 
+  function addCalendarMonths(timestamp, months) {
+    const date = new Date(Number(timestamp) || Date.now());
+    const day = date.getDate();
+    date.setDate(1);
+    date.setMonth(date.getMonth() + Math.max(1, Math.floor(Number(months) || 1)));
+    const lastDay = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+    date.setDate(Math.min(day, lastDay));
+    return date.getTime();
+  }
+
+  function publicTsNitroPackages(account) {
+    const now = Date.now();
+    return (Array.isArray(account?.nitroPackages) ? account.nitroPackages : [])
+      .filter(pkg => pkg && typeof pkg === 'object')
+      .map(pkg => {
+        const startedAt = Number(pkg.startedAt) || 0;
+        const expiresAt = Number(pkg.expiresAt) || 0;
+        return {
+          id: String(pkg.id || ''),
+          months: Math.max(1, Math.floor(Number(pkg.months) || 1)),
+          startedAt,
+          expiresAt,
+          active: expiresAt > now,
+          remainingMs: Math.max(0, expiresAt - now),
+          guildId: pkg.guildId ? String(pkg.guildId) : null,
+          guildName: String(pkg.guildName || 'Discord server').slice(0, 100),
+          boostCount: Math.max(0, Math.floor(Number(pkg.boostCount) || 0)),
+          createdAt: Number(pkg.createdAt) || startedAt,
+        };
+      })
+      .sort((a, b) => (a.expiresAt || Infinity) - (b.expiresAt || Infinity));
+  }
+
   function tsAccountsPublic() {
     return tsAccountsRaw().map(a => ({
       email: a.email,
@@ -291,7 +324,47 @@ const ts = require('./lib/trueStudio');
       hasDirectToken: !!a.directToken,
       addedAt: a.addedAt || 0,
       verify: a.verify || null,
+      packages: publicTsNitroPackages(a),
     }));
+  }
+
+  function persistTsNitroState(email, state) {
+    const rec = tsFindAccount(email);
+    if (!rec || !state) return;
+    const d = ensureData();
+    rec.nitroStatus = {
+      totalSlots: Array.isArray(state.slots) ? state.slots.length : 0,
+      availableSlots: Array.isArray(state.availableSlotIds) ? state.availableSlotIds.length : 0,
+      appliedSlots: Array.isArray(state.slots) ? state.slots.filter(slot => slot.applied).length : 0,
+      cooldown: state.cooldown || null,
+      nextSlotCooldownAt: state.nextSlotCooldownAt || null,
+      boostedGuilds: Array.isArray(state.boostedGuilds) ? state.boostedGuilds : [],
+      subscriptions: Array.isArray(state.subscriptions) ? state.subscriptions : [],
+      fetchedAt: state.fetchedAt || new Date().toISOString(),
+    };
+    writeData(d);
+  }
+
+  function recordTsNitroPackage(email, { months = 1, guildId = null, guildName = 'Discord server', boostCount = 0 } = {}) {
+    const rec = tsFindAccount(email);
+    if (!rec) return null;
+    const durationMonths = Math.max(1, Math.min(36, Math.floor(Number(months) || 1)));
+    const startedAt = Date.now();
+    const pkg = {
+      id: `nitro-${startedAt.toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+      months: durationMonths,
+      startedAt,
+      expiresAt: addCalendarMonths(startedAt, durationMonths),
+      guildId: guildId ? String(guildId) : null,
+      guildName: String(guildName || 'Discord server').slice(0, 100),
+      boostCount: Math.max(0, Math.min(2, Math.floor(Number(boostCount) || 0))),
+      createdAt: startedAt,
+    };
+    if (!Array.isArray(rec.nitroPackages)) rec.nitroPackages = [];
+    rec.nitroPackages.push(pkg);
+    rec.nitroPackages = rec.nitroPackages.slice(-100);
+    writeData(ensureData());
+    return publicTsNitroPackages({ nitroPackages: [pkg] })[0] || null;
   }
 
   function tsFindAccount(email) {
@@ -1435,8 +1508,11 @@ const ts = require('./lib/trueStudio');
             appliedSlots: Number.isFinite(Number(nitro.appliedSlots)) ? Number(nitro.appliedSlots) : null,
             cooldown: nitro.cooldown || null,
             nextSlotCooldownAt: nitro.nextSlotCooldownAt || null,
+            boostedGuilds: Array.isArray(nitro.boostedGuilds) ? nitro.boostedGuilds.map(g => ({ id: String(g.id || ''), name: String(g.name || 'Discord server').slice(0, 100) })).filter(g => g.id) : [],
+            subscriptions: Array.isArray(nitro.subscriptions) ? nitro.subscriptions.map(s => ({ id: String(s.id || ''), guildId: s.guildId ? String(s.guildId) : null, ended: s.ended === true })).filter(s => s.id || s.guildId) : [],
             fetchedAt: nitro.fetchedAt || null,
           },
+          packages: publicTsNitroPackages(a),
         };
       });
       const counts = accounts.reduce((acc, account) => {
@@ -1447,9 +1523,13 @@ const ts = require('./lib/trueStudio');
         if (account.status === 'rate_limited' || account.status === 'global_rate_limited' || account.status === 'rate_limit_pending') acc.rateLimited += 1;
         if (account.nitro.cooldown?.active || (account.nitro.nextSlotCooldownAt && Date.parse(account.nitro.nextSlotCooldownAt) > Date.now())) acc.cooldown += 1;
         if (Number(account.nitro.availableSlots) > 0) acc.withBoosts += 1;
+        if (Array.isArray(account.nitro.boostedGuilds) && account.nitro.boostedGuilds.length) acc.boostedAccounts += 1;
+        const activePackages = (account.packages || []).filter(pkg => pkg.active);
+        acc.activePackages += activePackages.length;
+        acc.expiringPackages += activePackages.filter(pkg => pkg.remainingMs <= 7 * 24 * 60 * 60 * 1000).length;
         acc.availableBoosts += Number(account.nitro.availableSlots) || 0;
         return acc;
-      }, { total: 0, ok: 0, failed: 0, unchecked: 0, rateLimited: 0, cooldown: 0, withBoosts: 0, availableBoosts: 0 });
+      }, { total: 0, ok: 0, failed: 0, unchecked: 0, rateLimited: 0, cooldown: 0, withBoosts: 0, boostedAccounts: 0, activePackages: 0, expiringPackages: 0, availableBoosts: 0 });
       ok(res, { generatedAt: new Date().toISOString(), counts, accounts });
     } catch (e) { fail(res, e); }
   });
@@ -2191,10 +2271,18 @@ const ts = require('./lib/trueStudio');
       .filter(s => s.cooldownEndsAt && Date.parse(s.cooldownEndsAt) > Date.now())
       .map(s => s.cooldownEndsAt)
       .sort();
+    const guildViews = guilds.map(g => ({ id: String(g.id), name: g.name || 'Discord server', icon: g.icon || null, owner: !!g.owner }));
+    const guildNames = new Map(guildViews.map(g => [g.id, g.name]));
+    const boostedGuildIds = [...new Set([
+      ...activeSubscriptions.filter(sub => sub.ended !== true && sub.guildId).map(sub => sub.guildId),
+      ...slotViews.filter(slot => slot.applied && slot.guildId).map(slot => slot.guildId),
+    ])];
+    const boostedGuilds = boostedGuildIds.map(id => ({ id, name: guildNames.get(id) || 'Discord server' }));
     return {
-      guilds: guilds.map(g => ({ id: String(g.id), name: g.name || 'Discord server', icon: g.icon || null, owner: !!g.owner })),
+      guilds: guildViews,
       slots: slotViews,
       subscriptions: activeSubscriptions,
+      boostedGuilds,
       cooldown: normalizeNitroCooldown(cooldown),
       nextSlotCooldownAt: futureSlotCooldowns[0] || null,
       availableSlotIds: slotViews.filter(s => s.transferAvailable).map(s => s.id),
@@ -2210,19 +2298,7 @@ const ts = require('./lib/trueStudio');
       const { token, client } = await tsGetToken(email);
       const rateLimiter = makeTsRateLimiter('nitro-status', null, { minimumGapMs: 900, account: email });
       const state = await enqueueTsAccount(email, () => readTsNitroState({ token, client, rateLimiter }), { label: 'Read Nitro status' });
-      const d = ensureData();
-      const rec = tsFindAccount(email);
-      if (rec) {
-        rec.nitroStatus = {
-          totalSlots: state.slots.length,
-          availableSlots: state.availableSlotIds.length,
-          appliedSlots: state.slots.filter(slot => slot.applied).length,
-          cooldown: state.cooldown,
-          nextSlotCooldownAt: state.nextSlotCooldownAt,
-          fetchedAt: state.fetchedAt,
-        };
-        writeData(d);
-      }
+      persistTsNitroState(email, state);
       tsLog('info', `Nitro: تم تحديث الحالة — ${state.availableSlotIds.length} بوست متاح، cooldown ${state.cooldown.endsAt || 'غير موجود'}`, { operation: 'nitro_status', confirmed: true, stage: 'complete', account: email });
       ok(res, state);
     } catch (e) {
@@ -2231,7 +2307,7 @@ const ts = require('./lib/trueStudio');
     }
   });
 
-  async function executeTsNitroPost(email, { guildId = '', inviteUrl = '', count = 1 } = {}, logContext = {}) {
+  async function executeTsNitroPost(email, { guildId = '', inviteUrl = '', count = 1, months = 1 } = {}, logContext = {}) {
     const accountEmail = String(email || '').trim().toLowerCase();
     const requestedCount = Math.max(1, Math.min(2, Number(count) || 1));
     if (!accountEmail) throw new Error('email required');
@@ -2249,7 +2325,22 @@ const ts = require('./lib/trueStudio');
       if (type === 'rate_limit_wait') nitroLog('warn', 'rate_limit', `انتظار ${Math.max(1, Math.ceil(Number(waitMs || 0) / 1000))}s قبل الطلب التالي (${reason || 'Discord'})`);
       if (type === 'rate_limit_resume') nitroLog('info', 'rate_limit_resume', 'انتهى الانتظار واستئناف الحساب');
     }, { minimumGapMs: 900, account: accountEmail });
-    const readState = (label) => withTsRateRetry(`${accountLabel} ${label}`, () => enqueueTsAccount(accountEmail, () => readTsNitroState({ token, client, rateLimiter }), { label }), { attempts: 2, minWaitMs: 1000 });
+    const readState = async (label) => {
+      const value = await withTsRateRetry(`${accountLabel} ${label}`, () => enqueueTsAccount(accountEmail, () => readTsNitroState({ token, client, rateLimiter }), { label }), { attempts: 2, minWaitMs: 1000 });
+      persistTsNitroState(accountEmail, value);
+      return value;
+    };
+    const health = await withTsRateRetry(`${accountLabel} account health`, () => enqueueTsAccount(accountEmail, () => ts.accountHealthProbe({
+      token, netOpts: { client, rateLimiter },
+    }), { label: 'Nitro account health' }), { attempts: 2, minWaitMs: 1000 });
+    if (!health?.ready) {
+      const error = new Error(health?.message || 'الحساب غير جاهز لتنفيذ عملية Nitro');
+      error.code = health?.classification || 'ACCOUNT_NOT_READY';
+      error.retryAfter = health?.retryAfter || 0;
+      error.rateLimit = health?.rateLimit || null;
+      throw error;
+    }
+    nitroLog('success', 'health', 'الحساب صالح والاتصال جاهز');
     const requestedGuildId = String(guildId || '').trim();
     const requestedInviteUrl = String(inviteUrl || '').trim();
     let joinedGuildId = requestedGuildId || null;
@@ -2283,7 +2374,8 @@ const ts = require('./lib/trueStudio');
     }
     if (state.availableSlotIds.length < requestedCount) {
       const waitUntil = state.nextSlotCooldownAt ? ` — أقرب انتهاء للكول داون: ${state.nextSlotCooldownAt}` : '';
-      const e = new Error(`لا يوجد عدد كافٍ من بوستات Nitro القابلة للوضع أو النقل (المتاح: ${state.availableSlotIds.length}، المطلوب: ${requestedCount})${waitUntil}`);
+      const reason = state.slots.length === 0 ? 'الحساب لا يملك Nitro أو لا توجد له بوستات' : `المتاح من البوستات: ${state.availableSlotIds.length}`;
+      const e = new Error(`${reason} (المطلوب: ${requestedCount})${waitUntil}`);
       e.code = 'NITRO_SLOTS_INSUFFICIENT'; e.cooldown = state.cooldown;
       throw e;
     }
@@ -2298,11 +2390,12 @@ const ts = require('./lib/trueStudio');
     }), { label: 'Apply Nitro boosts' }), { attempts: 2, minWaitMs: 1000 });
 
     nitroLog('info', 'verify', 'قراءة الحالة النهائية للتحقق');
-    const after = await readState('Verify Nitro boosts');
-    const appliedCount = after.slots.filter(s => s.applied && s.guildId === joinedGuildId).length;
-    const verified = appliedCount >= requestedCount;
+      const after = await readState('Verify Nitro boosts');
+      const appliedCount = after.slots.filter(s => s.applied && s.guildId === joinedGuildId).length;
+      const verified = appliedCount >= requestedCount;
+      const packageRecord = verified ? recordTsNitroPackage(accountEmail, { months, guildId: joinedGuildId, guildName: targetGuild.name, boostCount: requestedCount }) : null;
     nitroLog(verified ? 'success' : 'warn', verified ? 'complete' : 'unverified', `${verified ? 'تم التحقق من وضع البوستات' : 'تم إرسال الطلب لكن تعذر التحقق الكامل'} (${appliedCount}/${requestedCount})`, { guild: joinedGuildId, confirmed: verified });
-    return { email: accountEmail, verified, guild: targetGuild, requestedCount, appliedCount, state: after };
+    return { email: accountEmail, verified, guild: targetGuild, requestedCount, appliedCount, package: packageRecord, state: after };
   }
 
   function nitroParallelism(value, total) {

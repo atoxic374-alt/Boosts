@@ -90,6 +90,7 @@ export class TrueStudioManager {
     this.nitroSelectedGuildId = '';
     this.nitroInviteUrl = '';
     this.nitroPostCount = 1;
+    this.nitroPackageMonths = 1;
     this.nitroSelectedEmails = [];
     this.nitroParallelism = 3;
     this.nitroBulkResults = [];
@@ -408,6 +409,10 @@ export class TrueStudioManager {
       const nitroEndsAt = this.nitroState?.cooldown?.active ? this.nitroState.cooldown.endsAt : this.nitroState?.nextSlotCooldownAt;
       const nitroEnds = nitroEndsAt ? Date.parse(nitroEndsAt) : 0;
       if (nitroRemaining && nitroEnds) nitroRemaining.textContent = this._fmtNitroRemaining(Math.max(0, nitroEnds - Date.now()));
+      this.contentArea.querySelectorAll('[data-ts-package-expiry]').forEach(node => {
+        const expiry = Number(node.getAttribute('data-ts-package-expiry') || 0);
+        if (expiry) node.textContent = this._fmtNitroRemaining(Math.max(0, expiry - Date.now()));
+      });
     }, 500);
   }
 
@@ -738,23 +743,24 @@ export class TrueStudioManager {
 
   _renderDashboard() {
     const d = this.dashboard || {};
-    const c = d.counts || { total: 0, ok: 0, failed: 0, unchecked: 0, rateLimited: 0, cooldown: 0, withBoosts: 0, availableBoosts: 0 };
+    const c = d.counts || { total: 0, ok: 0, failed: 0, unchecked: 0, rateLimited: 0, cooldown: 0, withBoosts: 0, boostedAccounts: 0, activePackages: 0, expiringPackages: 0, availableBoosts: 0 };
     const accounts = Array.isArray(d.accounts) ? d.accounts : [];
-    const filtered = accounts.filter(a => this.dashboardFilter === 'all' || (this.dashboardFilter === 'ok' && a.ok) || (this.dashboardFilter === 'failed' && !a.ok && a.status !== 'unchecked') || (this.dashboardFilter === 'unchecked' && a.status === 'unchecked') || (this.dashboardFilter === 'boosts' && Number(a.nitro?.availableSlots) > 0) || (this.dashboardFilter === 'cooldown' && (a.nitro?.cooldown?.active || (a.nitro?.nextSlotCooldownAt && Date.parse(a.nitro.nextSlotCooldownAt) > Date.now()))));
+    const filtered = accounts.filter(a => this.dashboardFilter === 'all' || (this.dashboardFilter === 'ok' && a.ok) || (this.dashboardFilter === 'failed' && !a.ok && a.status !== 'unchecked') || (this.dashboardFilter === 'unchecked' && a.status === 'unchecked') || (this.dashboardFilter === 'boosts' && (Number(a.nitro?.availableSlots) > 0 || (a.nitro?.boostedGuilds || []).length > 0)) || (this.dashboardFilter === 'packages' && (a.packages || []).some(pkg => pkg.active)) || (this.dashboardFilter === 'cooldown' && (a.nitro?.cooldown?.active || (a.nitro?.nextSlotCooldownAt && Date.parse(a.nitro.nextSlotCooldownAt) > Date.now()))));
     const selected = accounts.find(a => a.id === this.dashboardSelectedId) || null;
     const maxBoosts = Math.max(1, ...accounts.map(a => Number(a.nitro?.availableSlots) || 0));
     const lastUpdated = d.generatedAt ? new Date(d.generatedAt).toLocaleString('ar-SA') : '—';
     const job = this.healthJob;
     const jobRunning = job?.state === 'running';
     const jobProgress = job ? Math.min(100, Math.round((Number(job.completed || 0) / Math.max(1, Number(job.total || 0))) * 100)) : 0;
+    const formatPackage = pkg => `${escapeHtml(pkg.guildName || 'Discord server')} · ${pkg.months} ${escapeHtml(t('ts.nitro_months') || 'months')} · <b data-ts-package-expiry="${Number(pkg.expiresAt) || 0}">${this._fmtNitroRemaining(Math.max(0, Number(pkg.remainingMs) || 0))}</b>`;
     return `<section class="ts-dashboard" id="ts-dashboard">
       <div class="ts-dashboard-head"><div><span class="ts-dashboard-kicker">ACCOUNT TELEMETRY</span><h3>${escapeHtml(t('ts.dashboard_title') || 'لوحة حالة الحسابات')}</h3><p>${escapeHtml(t('ts.dashboard_hint') || 'ملخص مباشر للاتصال وNitro والكول داون بدون عرض التوكنات.')}</p>${this.dashboardError ? `<div class="ts-dashboard-error">${escapeHtml(this.dashboardError)}</div>` : ''}</div><div class="ts-dashboard-actions"><span class="ts-dashboard-updated">${escapeHtml(t('ts.dashboard_updated') || 'آخر تحديث')}: ${escapeHtml(lastUpdated)}</span><button class="ts-btn ts-btn-xs mint" id="ts-dashboard-health-start" ${!this.accounts.length || jobRunning ? 'disabled' : ''}>فحص كل الحسابات</button><button class="ts-btn ts-btn-xs" id="ts-dashboard-refresh">${escapeHtml(this.dashboardLoading ? 'جارٍ التحديث…' : (t('ts.dashboard_refresh') || 'تحديث'))}</button></div></div>
-      <div class="ts-dashboard-stats"><div><b>${c.total}</b><span>${escapeHtml(t('ts.dashboard_total') || 'الإجمالي')}</span></div><div class="good"><b>${c.ok}</b><span>${escapeHtml(t('ts.dashboard_ok') || 'متصل')}</span></div><div class="bad"><b>${c.failed}</b><span>${escapeHtml(t('ts.dashboard_failed') || 'فشل')}</span></div><div class="warn"><b>${c.rateLimited}</b><span>${escapeHtml(t('ts.dashboard_limited') || 'محدود')}</span></div><div><b>${c.availableBoosts}</b><span>${escapeHtml(t('ts.dashboard_boosts') || 'بوست متاح')}</span></div><div class="warn"><b>${c.cooldown}</b><span>${escapeHtml(t('ts.dashboard_cooldown') || 'Cooldown')}</span></div></div>
+      <div class="ts-dashboard-stats"><div><b>${c.total}</b><span>${escapeHtml(t('ts.dashboard_total') || 'الإجمالي')}</span></div><div class="good"><b>${c.ok}</b><span>${escapeHtml(t('ts.dashboard_ok') || 'متصل')}</span></div><div class="bad"><b>${c.failed}</b><span>${escapeHtml(t('ts.dashboard_failed') || 'فشل')}</span></div><div class="warn"><b>${c.rateLimited}</b><span>${escapeHtml(t('ts.dashboard_limited') || 'محدود')}</span></div><div><b>${c.availableBoosts}</b><span>${escapeHtml(t('ts.dashboard_boosts') || 'بوست متاح')}</span></div><div class="good"><b>${c.boostedAccounts}</b><span>${escapeHtml(t('ts.dashboard_boosted_accounts') || 'حساب عليه بوست')}</span></div><div><b>${c.activePackages}</b><span>${escapeHtml(t('ts.dashboard_active_packages') || 'باقات نشطة')}</span></div><div class="warn"><b>${c.expiringPackages}</b><span>${escapeHtml(t('ts.dashboard_expiring_packages') || 'تنتهي خلال 7 أيام')}</span></div><div class="warn"><b>${c.cooldown}</b><span>${escapeHtml(t('ts.dashboard_cooldown') || 'Cooldown')}</span></div></div>
       ${job ? `<div class="ts-health-job ${jobRunning ? 'running' : job.state === 'cancelled' ? 'cancelled' : 'done'}"><div class="ts-health-job-head"><strong>Health Check · ${escapeHtml(job.jobId || '')}</strong><span>${job.completed || 0}/${job.total || 0} · ${jobProgress}%</span></div><div class="ts-health-progress"><i style="width:${jobProgress}%"></i></div><div class="ts-health-job-actions"><span>${jobRunning ? 'الفحص يعمل الآن' : job.state === 'cancelled' ? 'تم إيقاف الفحص' : `اكتمل: ${job.passed || 0} ناجح · ${job.failed || 0} فشل`}</span>${jobRunning ? `<button class="ts-btn ts-btn-xs danger" id="ts-health-stop">إيقاف</button>` : job.failed ? `<button class="ts-btn ts-btn-xs" id="ts-health-retry">إعادة فحص الفاشل</button>` : ''}</div></div>` : ''}
       <div class="ts-dashboard-charts"><div class="ts-dashboard-chart ts-dashboard-donut"><div class="ts-dashboard-chart-title">${escapeHtml(t('ts.dashboard_status_chart') || 'توزيع الحالات')}</div><div class="ts-donut" style="--ok:${c.total ? Math.round(c.ok / c.total * 100) : 0}%;--failed:${c.total ? Math.round(c.failed / c.total * 100) : 0}%;"><span>${c.total}</span></div><div class="ts-dashboard-legend"><span><i class="ok"></i>${escapeHtml(t('ts.dashboard_ok') || 'متصل')} ${c.ok}</span><span><i class="bad"></i>${escapeHtml(t('ts.dashboard_failed') || 'فشل')} ${c.failed}</span><span><i class="neutral"></i>${escapeHtml(t('ts.dashboard_unchecked') || 'غير مفحوص')} ${c.unchecked}</span></div></div><div class="ts-dashboard-chart"><div class="ts-dashboard-chart-title">${escapeHtml(t('ts.dashboard_boost_chart') || 'البوستات المتاحة حسب الحساب')}</div><div class="ts-dashboard-bars">${accounts.slice(0, 12).map(a => `<div class="ts-dashboard-bar-row"><span title="${escapeAttr(a.label)}">${escapeHtml(a.label)}</span><i><b style="width:${Math.min(100, (Number(a.nitro?.availableSlots) || 0) / maxBoosts * 100)}%"></b></i><em>${Number(a.nitro?.availableSlots) || 0}</em></div>`).join('') || `<small>${escapeHtml(t('ts.dashboard_no_data') || 'لا توجد بيانات بعد')}</small>`}</div></div></div>
-      <div class="ts-dashboard-table-head"><strong>${escapeHtml(t('ts.dashboard_accounts') || 'تفاصيل الحسابات')}</strong><select id="ts-dashboard-filter" class="ts-input"><option value="all" ${this.dashboardFilter === 'all' ? 'selected' : ''}>الكل</option><option value="ok" ${this.dashboardFilter === 'ok' ? 'selected' : ''}>متصل</option><option value="failed" ${this.dashboardFilter === 'failed' ? 'selected' : ''}>فشل</option><option value="unchecked" ${this.dashboardFilter === 'unchecked' ? 'selected' : ''}>غير مفحوص</option><option value="boosts" ${this.dashboardFilter === 'boosts' ? 'selected' : ''}>لديه بوست</option><option value="cooldown" ${this.dashboardFilter === 'cooldown' ? 'selected' : ''}>Cooldown</option></select></div>
-      <div class="ts-dashboard-table"><div class="ts-dashboard-row ts-dashboard-row-head"><span>الحساب</span><span>الحالة</span><span>Nitro / Boosts</span><span>Cooldown</span><span>آخر فحص</span></div>${filtered.map(a => { const cd = a.nitro?.cooldown?.active ? a.nitro.cooldown.endsAt : a.nitro?.nextSlotCooldownAt; const left = cd && Date.parse(cd) > Date.now() ? this._fmtNitroRemaining(Date.parse(cd) - Date.now()) : 'جاهز'; return `<button class="ts-dashboard-row ${a.id === this.dashboardSelectedId ? 'selected' : ''}" data-dashboard-select="${escapeAttr(a.id)}"><span><b>${escapeHtml(a.label)}</b>${a.username ? `<small>${escapeHtml(a.username)}</small>` : ''}</span><span class="ts-dashboard-status ${a.ok ? 'ok' : (a.status === 'unchecked' ? 'neutral' : 'bad')}">${escapeHtml(this._dashboardStatusLabel(a.status))}</span><span>${a.nitro?.availableSlots == null ? '—' : `${a.nitro.availableSlots} / ${a.nitro.totalSlots ?? '—'}`}</span><span>${escapeHtml(left)}</span><span>${a.lastCheckedAt ? escapeHtml(new Date(a.lastCheckedAt).toLocaleString('ar-SA')) : '—'}</span></button>`; }).join('') || `<div class="ts-dashboard-empty">${escapeHtml(t('ts.dashboard_no_matches') || 'لا توجد حسابات مطابقة')}</div>`}</div>
-      ${selected ? `<div class="ts-dashboard-detail"><strong>${escapeHtml(selected.label)}</strong><span>${escapeHtml(selected.message || '—')}</span><span>User ID: ${escapeHtml(selected.userId || '—')}</span></div>` : ''}
+      <div class="ts-dashboard-table-head"><strong>${escapeHtml(t('ts.dashboard_accounts') || 'تفاصيل الحسابات')}</strong><select id="ts-dashboard-filter" class="ts-input"><option value="all" ${this.dashboardFilter === 'all' ? 'selected' : ''}>الكل</option><option value="ok" ${this.dashboardFilter === 'ok' ? 'selected' : ''}>متصل</option><option value="failed" ${this.dashboardFilter === 'failed' ? 'selected' : ''}>فشل</option><option value="unchecked" ${this.dashboardFilter === 'unchecked' ? 'selected' : ''}>غير مفحوص</option><option value="boosts" ${this.dashboardFilter === 'boosts' ? 'selected' : ''}>لديه بوست</option><option value="packages" ${this.dashboardFilter === 'packages' ? 'selected' : ''}>لديه باقة</option><option value="cooldown" ${this.dashboardFilter === 'cooldown' ? 'selected' : ''}>Cooldown</option></select></div>
+      <div class="ts-dashboard-table"><div class="ts-dashboard-row ts-dashboard-row-head"><span>الحساب</span><span>الحالة</span><span>Nitro / Boosts</span><span>Cooldown</span><span>آخر فحص</span></div>${filtered.map(a => { const cd = a.nitro?.cooldown?.active ? a.nitro.cooldown.endsAt : a.nitro?.nextSlotCooldownAt; const left = cd && Date.parse(cd) > Date.now() ? this._fmtNitroRemaining(Date.parse(cd) - Date.now()) : 'جاهز'; const boosted = Array.isArray(a.nitro?.boostedGuilds) ? a.nitro.boostedGuilds : []; const packages = Array.isArray(a.packages) ? a.packages : []; const activePackages = packages.filter(pkg => pkg.active); return `<button class="ts-dashboard-row ${a.id === this.dashboardSelectedId ? 'selected' : ''}" data-dashboard-select="${escapeAttr(a.id)}"><span><b>${escapeHtml(a.label)}</b>${a.username ? `<small>${escapeHtml(a.username)}</small>` : ''}</span><span class="ts-dashboard-status ${a.ok ? 'ok' : (a.status === 'unchecked' ? 'neutral' : 'bad')}">${escapeHtml(this._dashboardStatusLabel(a.status))}</span><span class="ts-dashboard-nitro-cell"><b>${a.nitro?.availableSlots == null ? '—' : `${a.nitro.availableSlots} / ${a.nitro.totalSlots ?? '—'}`}</b>${boosted.length ? `<small class="ts-dashboard-boosted">${escapeHtml(t('ts.dashboard_boosted_on') || 'مبوست على')}: ${escapeHtml(boosted.map(g => g.name).join('، '))}</small>` : `<small>${escapeHtml(t('ts.dashboard_no_active_boost') || 'لا توجد بوستات مرتبطة')}</small>`}${activePackages.length ? activePackages.map(pkg => `<small class="ts-dashboard-package">${formatPackage(pkg)} ${escapeHtml(t('ts.nitro_remaining') || 'متبقي')}</small>`).join('') : ''}</span><span>${escapeHtml(left)}</span><span>${a.lastCheckedAt ? escapeHtml(new Date(a.lastCheckedAt).toLocaleString('ar-SA')) : '—'}</span></button>`; }).join('') || `<div class="ts-dashboard-empty">${escapeHtml(t('ts.dashboard_no_matches') || 'لا توجد حسابات مطابقة')}</div>`}</div>
+      ${selected ? `<div class="ts-dashboard-detail"><strong>${escapeHtml(selected.label)}</strong><span>${escapeHtml(selected.message || '—')}</span><span>User ID: ${escapeHtml(selected.userId || '—')}</span>${selected.nitro?.boostedGuilds?.length ? `<span><b>${escapeHtml(t('ts.dashboard_boosted_on') || 'مبوست على')}:</b> ${escapeHtml(selected.nitro.boostedGuilds.map(g => g.name).join('، '))}</span>` : ''}${selected.packages?.length ? `<span><b>${escapeHtml(t('ts.dashboard_packages') || 'الباقات')}:</b> ${selected.packages.map(pkg => `${escapeHtml(pkg.guildName)} · ${pkg.months} ${escapeHtml(t('ts.nitro_months') || 'شهر')} · ${pkg.active ? `<b data-ts-package-expiry="${Number(pkg.expiresAt) || 0}">${this._fmtNitroRemaining(Math.max(0, Number(pkg.remainingMs) || 0))}</b>` : escapeHtml(t('ts.dashboard_expired') || 'منتهية')}`).join(' | ')}</span>` : ''}</div>` : ''}
     </section>`;
   }
 
@@ -817,6 +823,10 @@ export class TrueStudioManager {
         </div>
         <div class="ts-field"><div class="ts-field-label">${escapeHtml(t('ts.nitro_count_label'))}</div>
           <select id="ts-nitro-count" class="ts-input"><option value="1" ${this.nitroPostCount === 1 ? 'selected' : ''}>1</option><option value="2" ${this.nitroPostCount === 2 ? 'selected' : ''}>2</option></select>
+        </div>
+        <div class="ts-field"><div class="ts-field-label">${escapeHtml(t('ts.nitro_package_label'))}</div>
+          <select id="ts-nitro-package-months" class="ts-input">${[1, 2, 3, 6, 12, 24, 36].map(value => `<option value="${value}" ${value === Number(this.nitroPackageMonths) ? 'selected' : ''}>${value} ${escapeHtml(t('ts.nitro_months'))}</option>`).join('')}</select>
+          <div class="ts-field-hint">${escapeHtml(t('ts.nitro_package_hint'))}</div>
         </div>
       </div>
       <div class="ts-nitro-post-actions"><button class="ts-btn" id="ts-nitro-refresh">${escapeHtml(t('ts.nitro_refresh'))}</button><button class="ts-btn mint" id="ts-nitro-post-submit" ${canSubmit ? '' : 'disabled'}>${escapeHtml(t('ts.nitro_post_submit'))}</button></div>
@@ -4375,6 +4385,7 @@ export class TrueStudioManager {
     $('#ts-nitro-guild')?.addEventListener('change', (e) => { this.nitroSelectedGuildId = e.target.value; this.nitroInviteUrl = ''; this.render(); });
     $('#ts-nitro-invite')?.addEventListener('input', (e) => { this.nitroInviteUrl = e.target.value; if (e.target.value.trim()) { this.nitroSelectedGuildId = ''; } });
     $('#ts-nitro-count')?.addEventListener('change', (e) => { this.nitroPostCount = Math.max(1, Math.min(2, Number(e.target.value) || 1)); });
+    $('#ts-nitro-package-months')?.addEventListener('change', (e) => { this.nitroPackageMonths = Math.min(36, Math.max(1, Number(e.target.value) || 1)); });
     $('#ts-nitro-post-submit')?.addEventListener('click', () => this.submitNitroPost());
     $('#ts-dashboard-refresh')?.addEventListener('click', () => this.loadDashboard());
     $('#ts-dashboard-health-start')?.addEventListener('click', () => this.testAllAccounts());
@@ -4742,13 +4753,13 @@ export class TrueStudioManager {
     this.render();
     try {
       if (emails.length === 1) {
-        const r = await window.electronAPI.tsNitroPost(emails[0], guildId, inviteUrl, count);
+        const r = await window.electronAPI.tsNitroPost(emails[0], guildId, inviteUrl, count, this.nitroPackageMonths);
         this.nitroPostResult = { ok: r?.verified === true, message: r?.verified ? t('ts.nitro_post_verified') : t('ts.nitro_post_unverified') };
         if (r?.state) this.nitroState = r.state;
         else await this.loadNitroState();
       } else {
         const parallelism = Math.min(10, Math.max(1, Number(this.nitroParallelism) || 3));
-        const r = await window.electronAPI.tsNitroPostBulk(emails, guildId, inviteUrl, count, parallelism);
+        const r = await window.electronAPI.tsNitroPostBulk(emails, guildId, inviteUrl, count, parallelism, this.nitroPackageMonths);
         this.nitroBulkResults = Array.isArray(r?.results) ? r.results : [];
         const verified = this.nitroBulkResults.filter(item => item.verified === true).length;
         const successful = this.nitroBulkResults.filter(item => item.ok === true).length;
@@ -4761,6 +4772,7 @@ export class TrueStudioManager {
         if (firstState) this.nitroState = firstState;
       }
       showNotification(this.nitroPostResult.message, this.nitroPostResult.ok ? 'success' : 'warn');
+      await this.loadDashboard();
       this.render();
     } catch (e) {
       this.nitroPostResult = { ok: false, message: e.message || t('ts.nitro_post_failed') };
