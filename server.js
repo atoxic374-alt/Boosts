@@ -204,8 +204,27 @@ const ts = require('./lib/trueStudio');
   const TS_LOG_MAX = 250;
   function tsLog(level, msg, meta = null) {
     const s = tsSession();
-    const entry = { ts: Date.now(), level, msg: formatTsLogMessage(msg).slice(0, 500) };
+    const now = Date.now();
+    const entry = { ts: now, level, msg: formatTsLogMessage(msg).slice(0, 500) };
     if (meta && typeof meta === 'object') Object.assign(entry, meta);
+    // Concurrent UI refreshes can emit the same operation event several times.
+    // Collapse only identical operation-scoped events within a short window;
+    // keep separate runs, accounts, stages, and outcomes visible.
+    if (entry.operation) {
+      const duplicate = [...s.log].reverse().find(previous =>
+        now - Number(previous.ts || 0) <= 4000
+        && previous.operation === entry.operation
+        && previous.account === entry.account
+        && previous.stage === entry.stage
+        && previous.level === entry.level
+        && previous.confirmed === entry.confirmed
+        && previous.msg === entry.msg
+      );
+      if (duplicate) {
+        duplicate.ts = now;
+        return;
+      }
+    }
     s.log.push(entry);
     if (s.log.length > TS_LOG_MAX) s.log.splice(0, s.log.length - TS_LOG_MAX);
     pushTsEvent('ts_log', { entry: s.log[s.log.length - 1] });
@@ -361,6 +380,7 @@ const ts = require('./lib/trueStudio');
     rec.nitroStatus = {
       totalSlots: Array.isArray(state.slots) ? state.slots.length : 0,
       availableSlots: Array.isArray(state.availableSlotIds) ? state.availableSlotIds.length : 0,
+      transferableSlots: Array.isArray(state.transferableSlotIds) ? state.transferableSlotIds.length : 0,
       appliedSlots: Array.isArray(state.slots) ? state.slots.filter(slot => slot.applied).length : 0,
       cooldown: state.cooldown || null,
       nextSlotCooldownAt: state.nextSlotCooldownAt || null,
@@ -473,7 +493,6 @@ const ts = require('./lib/trueStudio');
     // ── Option A: Direct token (warm client, skip login) ──────────
     if (creds.directToken) {
       const client = ts.createClient();
-      tsLog('info', 'استخدام التوكن المباشر — تجهيز الاتصال…', { operation: 'warmup', confirmed: false });
       const warmup = await ts.warmUpClient(client);
       if (!warmup?.ok) {
         tsLog('warn', 'تعذر اتصال Discord أثناء التسخين؛ ستتم تجربة التحقق الأساسي الآن', {
@@ -481,7 +500,6 @@ const ts = require('./lib/trueStudio');
         });
       }
       tsStoreToken(email, creds.directToken, client);
-      tsLog('info', 'تم تجهيز عميل الاتصال؛ جارٍ التحقق الفعلي من الحساب', { operation: 'warmup', confirmed: false });
       return { token: creds.directToken, client };
     }
 
@@ -676,9 +694,6 @@ const ts = require('./lib/trueStudio');
       }
     });
     _tsAccountQueues.set(key, run);
-    if (hadQueue) {
-      try { tsLog('info', `${label}: تمت إضافته لطابور الحساب ${String(email || '').toLowerCase()}`); } catch (_) {}
-    }
     return run;
   }
 
@@ -1535,6 +1550,7 @@ const ts = require('./lib/trueStudio');
           nitro: {
             totalSlots: Number.isFinite(Number(nitro.totalSlots)) ? Number(nitro.totalSlots) : null,
             availableSlots: Number.isFinite(Number(nitro.availableSlots)) ? Number(nitro.availableSlots) : null,
+            transferableSlots: Number.isFinite(Number(nitro.transferableSlots)) ? Number(nitro.transferableSlots) : null,
             appliedSlots: Number.isFinite(Number(nitro.appliedSlots)) ? Number(nitro.appliedSlots) : null,
             cooldown: nitro.cooldown || null,
             nextSlotCooldownAt: nitro.nextSlotCooldownAt || null,
@@ -2317,7 +2333,9 @@ const ts = require('./lib/trueStudio');
       boostedGuilds,
       cooldown: normalizeNitroCooldown(cooldown),
       nextSlotCooldownAt: futureSlotCooldowns[0] || null,
-      availableSlotIds: slotViews.filter(s => s.transferAvailable).map(s => s.id),
+      // Unapplied slots are for new posting; applied slots are handled by Move.
+      availableSlotIds: slotViews.filter(s => !s.applied && s.transferAvailable).map(s => s.id),
+      transferableSlotIds: slotViews.filter(s => s.applied && s.subscriptionId && s.transferAvailable).map(s => s.id),
       fetchedAt: new Date().toISOString(),
     };
   }
@@ -2331,7 +2349,7 @@ const ts = require('./lib/trueStudio');
       const rateLimiter = makeTsRateLimiter('nitro-status', null, { minimumGapMs: 900, account: email });
       const state = await enqueueTsAccount(email, () => readTsNitroState({ token, client, rateLimiter }), { label: 'Read Nitro status' });
       persistTsNitroState(email, state);
-      tsLog('info', `Nitro: تم تحديث الحالة — ${state.availableSlotIds.length} بوست متاح، cooldown ${state.cooldown.endsAt || 'غير موجود'}`, { operation: 'nitro_status', confirmed: true, stage: 'complete', account: email, cooldownSource: state.cooldown.source, discordCode: state.cooldown.discordCode || null });
+      tsLog('info', `Nitro: الحالة — ${state.availableSlotIds.length} slot للبوست الجديد، ${state.transferableSlotIds.length} Boost قابل للنقل، cooldown عام ${state.cooldown.endsAt || 'غير موجود'}`, { operation: 'nitro_status', confirmed: true, stage: 'complete', account: email, cooldownSource: state.cooldown.source, discordCode: state.cooldown.discordCode || null, availableSlots: state.availableSlotIds.length, transferableSlots: state.transferableSlotIds.length });
       if (state.cooldown.source === 'discord-no-active-cooldown') {
         tsLog('info', 'Nitro: Discord أكد عدم وجود cooldown عام فعال؛ تم الاعتماد على cooldown الخاص بكل slot.', { operation: 'nitro_status', confirmed: true, stage: 'cooldown', account: email, discordCode: 10050 });
       }
@@ -2498,20 +2516,31 @@ const ts = require('./lib/trueStudio');
           if (!health?.ready) { const error = new Error(health?.message || 'الحساب غير صالح'); error.code = health?.classification || 'ACCOUNT_NOT_READY'; throw error; }
           const state = await withTsRateRetry(`${accountLabel} Nitro status`, () => enqueueTsAccount(email, () => readTsNitroState({ token, client, rateLimiter }), { label: 'Nitro move status' }), { attempts: 2, minWaitMs: 1000 });
           persistTsNitroState(email, state);
-          const sourceGuilds = (state.boostedGuilds || []).filter(g => !sourceGuildId || String(g.id) === sourceGuildId);
-          const slots = getTsMoveSlots(state, sourceGuildId, count);
-          const futureSlotCooldown = (state.slots || []).filter(slot => slot.applied && (!sourceGuildId || slot.guildId === sourceGuildId)).map(slot => slot.cooldownEndsAt).filter(value => value && Date.parse(value) > Date.now()).sort()[0] || null;
+          const transferableSourceIds = [...new Set((state.slots || [])
+            .filter(slot => slot.applied && slot.subscriptionId && slot.guildId && (!slot.cooldownEndsAt || Date.parse(slot.cooldownEndsAt) <= Date.now()))
+            .map(slot => String(slot.guildId)))];
+          const resolvedSourceGuildId = sourceGuildId || (transferableSourceIds.length === 1 ? transferableSourceIds[0] : '');
+          const sourceGuilds = (state.boostedGuilds || []).filter(g => !resolvedSourceGuildId || String(g.id) === resolvedSourceGuildId);
+          const slots = getTsMoveSlots(state, resolvedSourceGuildId, count);
+          const transferableSlotCount = (state.slots || []).filter(slot => slot.applied && slot.subscriptionId && slot.guildId && (!resolvedSourceGuildId || String(slot.guildId) === resolvedSourceGuildId) && (!slot.cooldownEndsAt || Date.parse(slot.cooldownEndsAt) <= Date.now())).length;
+          const futureSlotCooldown = (state.slots || []).filter(slot => slot.applied && (!resolvedSourceGuildId || slot.guildId === resolvedSourceGuildId)).map(slot => slot.cooldownEndsAt).filter(value => value && Date.parse(value) > Date.now()).sort()[0] || null;
           let status = 'ready';
           let reason = 'جاهز لتغيير السيرفر';
-          if (state.cooldown?.active) { status = 'cooldown'; reason = `مستبعد: cooldown حتى ${state.cooldown.endsAt}`; }
-          else if (!sourceGuilds.length) { status = 'no_boost'; reason = 'مستبعد: لا يوجد بوست مفعل على السيرفر المصدر'; }
-          else if (!sourceGuildId && sourceGuilds.length > 1) { status = 'source_required'; reason = 'مستبعد: اختر السيرفر المصدر لأن الحساب يضع بوستات على أكثر من سيرفر'; }
-          else if (slots.length < count) { status = 'missing_slots'; reason = futureSlotCooldown ? `مستبعد: لا توجد ${count} slots جاهزة؛ أقرب cooldown حتى ${futureSlotCooldown}` : `مستبعد: لا توجد ${count} slots قابلة للنقل مع معرف اشتراك صالح`; }
+          if (!sourceGuilds.length) { status = 'no_boost'; reason = 'مستبعد: لا يوجد بوست مفعل على السيرفر المصدر؛ استخدم وضع بوست جديد إذا كانت slots متاحة'; }
+          else if (!sourceGuildId && transferableSourceIds.length > 1) { status = 'source_required'; reason = 'مستبعد: اختر السيرفر المصدر لأن أكثر من سيرفر لديه Boost قابل للنقل'; }
+          else if (slots.length < count) {
+            status = state.cooldown?.active || futureSlotCooldown ? 'cooldown' : 'missing_slots';
+            reason = futureSlotCooldown
+              ? `مستبعد: لا توجد ${count} slots جاهزة؛ أقرب cooldown للـ slot حتى ${futureSlotCooldown}`
+              : state.cooldown?.active
+                ? `مستبعد: cooldown عام حتى ${state.cooldown.endsAt} ولا توجد slots قابلة للنقل حاليًا`
+                : `مستبعد: لا توجد ${count} slots قابلة للنقل مع معرف اشتراك صالح`;
+          }
           else if (targetGuildId && !state.guilds.some(g => String(g.id) === targetGuildId)) { status = 'not_member'; reason = 'مستبعد: الحساب ليس عضوًا في السيرفر الهدف'; }
           else if (targetGuildId && slots.some(slot => String(slot.guildId) === targetGuildId)) { status = 'same_server'; reason = 'مستبعد: السيرفر الهدف هو السيرفر الحالي للبوست'; }
           const ready = status === 'ready';
           log(ready ? 'success' : 'info', status, reason, { confirmed: ready, sourceGuilds: sourceGuilds.length, moveSlots: slots.length });
-          results[index] = { index, email, displayName, ready, status, reason, sourceGuilds, slots, state, availableSlots: state.availableSlotIds?.length || 0, cooldown: state.cooldown || null, durationMs: Date.now() - startedAt };
+          results[index] = { index, email, displayName, ready, status, reason, sourceGuilds, slots, transferableSlots: transferableSlotCount, state, availableSlots: state.availableSlotIds?.length || 0, cooldown: state.cooldown || null, durationMs: Date.now() - startedAt };
         } catch (e) {
           const reason = redactSecretText(e?.message || String(e)).slice(0, 300);
           log('error', e?.code || 'failed', reason);
@@ -2559,8 +2588,11 @@ const ts = require('./lib/trueStudio');
           if (!health?.ready) throw new Error(health?.message || 'الحساب غير صالح');
           let state = await withTsRateRetry(`${accountLabel} source status`, () => enqueueTsAccount(email, () => readTsNitroState({ token, client, rateLimiter }), { label: 'Nitro move source status' }), { attempts: 2, minWaitMs: 1000 });
           persistTsNitroState(email, state);
-          if (!sourceGuildId && state.boostedGuilds?.length > 1) throw new Error('حدد السيرفر المصدر عندما تكون للحساب بوستات على أكثر من سيرفر');
-          const source = sourceGuildId || state.boostedGuilds?.[0]?.id;
+          const transferableSourceIds = [...new Set((state.slots || [])
+            .filter(slot => slot.applied && slot.subscriptionId && slot.guildId && (!slot.cooldownEndsAt || Date.parse(slot.cooldownEndsAt) <= Date.now()))
+            .map(slot => String(slot.guildId)))];
+          if (!sourceGuildId && transferableSourceIds.length > 1) throw new Error('حدد السيرفر المصدر عندما توجد Boostات قابلة للنقل على أكثر من سيرفر');
+          const source = sourceGuildId || transferableSourceIds[0] || state.boostedGuilds?.[0]?.id;
           let target = targetGuildId;
           if (!target && inviteUrl) {
             const invite = await withTsRateRetry(`${accountLabel} Join move target`, () => enqueueTsAccount(email, () => ts.acceptInvite({ token, inviteCode: parseDiscordInvite(inviteUrl), netOpts }), { label: 'Join move target' }), { attempts: 2, minWaitMs: 1000 });
@@ -2570,8 +2602,7 @@ const ts = require('./lib/trueStudio');
           const targetGuild = state.guilds.find(g => String(g.id) === String(target));
           if (!targetGuild) throw new Error('الحساب ليس عضوًا في السيرفر الهدف');
           const moveSlots = getTsMoveSlots(state, source, count);
-          if (state.cooldown?.active) throw new Error(`cooldown حتى ${state.cooldown.endsAt}`);
-          if (moveSlots.length < count) throw new Error(`لا توجد ${count} بوستات قابلة للنقل بعد انتهاء cooldown`);
+          if (moveSlots.length < count) throw new Error(`لا توجد ${count} بوستات قابلة للنقل بعد انتهاء cooldown الخاص بالـ slot`);
           if (moveSlots.some(slot => String(slot.guildId) === String(target))) throw new Error('السيرفر الهدف يطابق السيرفر الحالي');
           for (const slot of moveSlots) {
             log('info', 'release', `فك البوست من السيرفر المصدر`, { sourceGuildId: slot.guildId, subscriptionId: slot.subscriptionId });
@@ -2579,8 +2610,12 @@ const ts = require('./lib/trueStudio');
             released++;
           }
           state = await withTsRateRetry(`${accountLabel} released status`, () => enqueueTsAccount(email, () => readTsNitroState({ token, client, rateLimiter }), { label: 'Nitro move released status' }), { attempts: 2, minWaitMs: 1000 });
-          const availableSlotIds = Array.isArray(state.availableSlotIds) ? state.availableSlotIds.slice(0, count) : [];
-          if (availableSlotIds.length < count) throw new Error('تم فك البوست لكن Discord لم يُعد slots المتاحة بعد؛ لا تعاد المحاولة قبل تحديث الحالة');
+          const releasedSlotIds = new Set(moveSlots.map(slot => String(slot.id || '').trim()).filter(Boolean));
+          const availableSlotIds = (Array.isArray(state.availableSlotIds) ? state.availableSlotIds : [])
+            .map(slotId => String(slotId || '').trim())
+            .filter(slotId => releasedSlotIds.has(slotId))
+            .slice(0, count);
+          if (availableSlotIds.length < count) throw new Error('تم فك البوست لكن Discord لم يُعد نفس slots المتاحة بعد؛ لا تعاد المحاولة قبل تحديث الحالة');
           log('info', 'apply', `تطبيق ${count} بوست على ${targetGuild.name}`);
           await withTsRateRetry(`${accountLabel} apply moved boosts`, () => enqueueTsAccount(email, () => ts.applyPremiumGuildSubscriptions({ token, guildId: target, slotIds: availableSlotIds, netOpts }), { label: 'Apply moved Nitro boosts' }), { attempts: 2, minWaitMs: 1000 });
           const after = await withTsRateRetry(`${accountLabel} verify moved boosts`, () => enqueueTsAccount(email, () => readTsNitroState({ token, client, rateLimiter }), { label: 'Verify moved Nitro boosts' }), { attempts: 2, minWaitMs: 1000 });
@@ -4077,15 +4112,11 @@ const ts = require('./lib/trueStudio');
       if (cached?.token && cached?.client) {
         token = cached.token;
         client = cached.client;
-        tsLog('info', 'استخدام جلسة دخول محفوظة لـ ' + creds.email + ' (الكوكيز محفوظة)');
       } else if (creds.directToken) {
         token = creds.directToken;
         // For Bright Data: use a fixed session so the warm-up stays on one IP.
         const loginProxy = bd ? buildBrightDataUrl(bd, 'login') : (proxyList[0] || null);
         client = ts.createClient(loginProxy);
-        if (bd)         tsLog('info', 'الجلسة عبر Bright Data — ' + (bd.protocol === 'socks5h' ? 'SOCKS5h' : 'HTTP') + ' · Zone: ' + bd.zoneName);
-        else if (loginProxy) tsLog('info', 'الجلسة تمر عبر Proxy: ' + loginProxy.replace(/:[^:@]+@/, ':***@'));
-        tsLog('info', 'استخدام التوكن المباشر — تجهيز الاتصال…', { operation: 'warmup', confirmed: false });
         const warmup = await ts.warmUpClient(client);
         if (!warmup?.ok) {
           tsLog('warn', 'تعذر اتصال Discord أثناء التسخين؛ ستتم تجربة التحقق الأساسي الآن', {
@@ -4093,13 +4124,10 @@ const ts = require('./lib/trueStudio');
           });
         }
         tsStoreToken(creds.email, token, client);
-        tsLog('info', 'تم تجهيز عميل الاتصال؛ جارٍ التحقق الفعلي من الحساب', { operation: 'warmup', confirmed: false });
       } else {
         tsLog('info', 'جاري تسجيل الدخول إلى ' + creds.email + '…');
         const loginProxy = bd ? buildBrightDataUrl(bd, 'login') : (proxyList[0] || null);
         client = ts.createClient(loginProxy);
-        if (bd)         tsLog('info', 'الجلسة عبر Bright Data — ' + (bd.protocol === 'socks5h' ? 'SOCKS5h' : 'HTTP') + ' · Zone: ' + bd.zoneName);
-        else if (loginProxy) tsLog('info', 'الجلسة تمر عبر Proxy: ' + loginProxy.replace(/:[^:@]+@/, ':***@'));
         const loginNetOpts = { solveCaptcha: buildSolveCaptcha(), client, speedFactor };
         const r = await ts.login({ email: creds.email, password: creds.password, totpSecret: creds.totpSecret, netOpts: loginNetOpts });
         token = r.token;

@@ -4221,6 +4221,11 @@ body.light-theme .ts-log-empty { color: #55716b; }
   background: rgba(255,90,110,.1);
   border: 1px solid rgba(255,90,110,.2);
 }
+.ts-log-confirm-badge.progress {
+  color: #f2c56b;
+  background: rgba(242,197,107,.1);
+  border: 1px solid rgba(242,197,107,.2);
+}
 .ts-log-confirm-badge .ts-inline-icon,
 .ts-log-stage-badge .ts-inline-icon {
   width: 11px;
@@ -4242,6 +4247,11 @@ body.light-theme .ts-log-confirm-badge.fail {
   color: #a52d3c;
   background: rgba(165,45,60,.08);
   border-color: rgba(165,45,60,.2);
+}
+body.light-theme .ts-log-confirm-badge.progress {
+  color: #8b6410;
+  background: rgba(139,100,16,.08);
+  border-color: rgba(139,100,16,.2);
 }
 @media (max-width: 680px) {
   .ts-log-badges { gap: 4px; }
