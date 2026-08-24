@@ -804,9 +804,10 @@ export class TrueStudioManager {
     const sourceMap = new Map();
     results.forEach(result => (result.sourceGuilds || []).forEach(guild => sourceMap.set(String(guild.id), guild)));
     const targetGuilds = Array.isArray(this.nitroState?.guilds) ? this.nitroState.guilds : [];
-    const selected = (this.nitroMoveSelectedEmails || []).filter(email => byEmail.get(email)?.ready === true);
+    const selected = [...new Set((this.nitroMoveSelectedEmails || []).map(email => String(email || '').trim().toLowerCase()))]
+      .filter(email => byEmail.get(email)?.ready === true);
     const preflightReady = !!this.nitroMovePreflight && !this.nitroMovePreflightLoading && !this.nitroMovePreflightError;
-    const accountOptions = ready.map(result => `<option value="${escapeAttr(result.email)}" ${selected.includes(result.email) ? 'selected' : ''}>${escapeHtml(result.displayName || t('ts.account_fallback_name'))} · ${escapeHtml(String(result.slots?.length || 0))} ${escapeHtml(t('ts.nitro_move_slots') || 'بوست')}</option>`).join('');
+    const accountOptions = ready.map(result => `<option value="${escapeAttr(result.email)}" ${selected.includes(String(result.email || '').toLowerCase()) ? 'selected' : ''}>${escapeHtml(result.displayName || t('ts.account_fallback_name'))} · ${escapeHtml(String(result.slots?.length || 0))} ${escapeHtml(t('ts.nitro_move_slots') || 'بوست')}</option>`).join('');
     const sourceOptions = [...sourceMap.values()].sort((a, b) => String(a.name).localeCompare(String(b.name))).map(guild => `<option value="${escapeAttr(guild.id)}" ${String(guild.id) === String(this.nitroMoveSourceGuildId) ? 'selected' : ''}>${escapeHtml(guild.name || guild.id)}</option>`).join('');
     const targetOptions = targetGuilds.filter(guild => String(guild.id) !== String(this.nitroMoveSourceGuildId)).map(guild => `<option value="${escapeAttr(guild.id)}" ${String(guild.id) === String(this.nitroMoveTargetGuildId) ? 'selected' : ''}>${escapeHtml(guild.name || guild.id)}</option>`).join('');
     const summary = this.nitroMovePreflightLoading
@@ -4464,11 +4465,11 @@ export class TrueStudioManager {
     $('#ts-server-captcha-check')?.addEventListener('click', () => this.verifyServerCaptchaKey());
     $('#ts-nitro-post-open')?.addEventListener('click', () => this.openNitroPost());
     $('#ts-nitro-move-open')?.addEventListener('click', () => this.openNitroMove());
-    $('#ts-nitro-move-accounts')?.addEventListener('change', (e) => { this.nitroMoveSelectedEmails = [...e.target.selectedOptions].map(option => option.value); this.nitroMoveResult = null; this.render(); });
-    $('#ts-nitro-move-source')?.addEventListener('change', (e) => { this.nitroMoveSourceGuildId = e.target.value; this.nitroMoveSelectedEmails = []; this.loadNitroMovePreflight(); });
+    $('#ts-nitro-move-accounts')?.addEventListener('change', (e) => { this.nitroMoveSelectedEmails = [...e.target.selectedOptions].map(option => String(option.value || '').trim().toLowerCase()); this.nitroMoveResult = null; this.render(); });
+    $('#ts-nitro-move-source')?.addEventListener('change', (e) => { this.nitroMoveSourceGuildId = e.target.value; this.loadNitroMovePreflight(); });
     $('#ts-nitro-move-target')?.addEventListener('change', (e) => { this.nitroMoveTargetGuildId = e.target.value; this.nitroMoveInviteUrl = ''; this.loadNitroMovePreflight(); });
     $('#ts-nitro-move-invite')?.addEventListener('input', (e) => { this.nitroMoveInviteUrl = e.target.value; if (e.target.value.trim()) { this.nitroMoveTargetGuildId = ''; } this.render(); });
-    $('#ts-nitro-move-count')?.addEventListener('change', (e) => { this.nitroMoveCount = Math.max(1, Math.min(2, Number(e.target.value) || 1)); this.nitroMoveSelectedEmails = []; this.loadNitroMovePreflight(); });
+    $('#ts-nitro-move-count')?.addEventListener('change', (e) => { this.nitroMoveCount = Math.max(1, Math.min(2, Number(e.target.value) || 1)); this.loadNitroMovePreflight(); });
     $('#ts-nitro-move-parallelism')?.addEventListener('change', (e) => { this.nitroParallelism = Math.min(10, Math.max(1, Number(e.target.value) || 3)); this.loadNitroMovePreflight(); });
     $('#ts-nitro-move-refresh')?.addEventListener('click', () => this.loadNitroMovePreflight());
     $('#ts-nitro-move-show-excluded')?.addEventListener('click', () => { this.nitroMoveShowExcluded = !this.nitroMoveShowExcluded; this.render(); });
