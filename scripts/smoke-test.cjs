@@ -52,6 +52,12 @@ async function json(path, options) {
   });
   assert.equal(missingNitroPostEmail.body?.success, false, 'Nitro post without an account should fail safely');
 
+  const missingNitroBulkEmails = await json('/api/ts/nitro/post-bulk', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ emails: [], count: 1 }),
+  });
+  assert.equal(missingNitroBulkEmails.body?.success, false, 'Bulk Nitro post without accounts should fail safely');
+
   const tokenWithoutPassword = await json('/api/ts/accounts', {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ email: 'smoke-token-only@example.invalid', directToken: 'fake-discord-user-token-1234567890' }),

@@ -2231,64 +2231,136 @@ const ts = require('./lib/trueStudio');
     }
   });
 
-  app.post('/api/ts/nitro/post', async (req, res) => {
-    const email = String(req.body?.email || '').trim().toLowerCase();
-    const requestedCount = Math.max(1, Math.min(2, Number(req.body?.count) || 1));
-    if (!email) return fail(res, new Error('email required'));
-    try {
-      const { token, client } = await tsGetToken(email);
-      const rateLimiter = makeTsRateLimiter('nitro-post', null, { minimumGapMs: 900, account: email });
-      const inviteUrl = String(req.body?.inviteUrl || '').trim();
-      const requestedGuildId = String(req.body?.guildId || '').trim();
-      let joinedGuildId = requestedGuildId || null;
-      let state = await enqueueTsAccount(email, () => readTsNitroState({ token, client, rateLimiter }), { label: 'Nitro post status' });
+  async function executeTsNitroPost(email, { guildId = '', inviteUrl = '', count = 1 } = {}) {
+    const accountEmail = String(email || '').trim().toLowerCase();
+    const requestedCount = Math.max(1, Math.min(2, Number(count) || 1));
+    if (!accountEmail) throw new Error('email required');
 
-      if (!joinedGuildId && inviteUrl) {
-        const inviteCode = parseDiscordInvite(inviteUrl);
-        tsLog('info', `Nitro: قبول دعوة السيرفر ${inviteCode} قبل وضع البوستات…`, { operation: 'nitro_post', confirmed: false, stage: 'invite', account: email });
-        const invite = await enqueueTsAccount(email, () => ts.acceptInvite({
-          token,
-          inviteCode,
-          netOpts: { client, solveCaptcha: buildSolveCaptcha({ require2Captcha: true }), rateLimiter, captchaContext: 'nitro-post-invite' },
-        }), { label: 'Join Nitro target server' });
-        joinedGuildId = String(invite?.guild?.id || invite?.guild_id || '').trim() || null;
-        state = await enqueueTsAccount(email, () => readTsNitroState({ token, client, rateLimiter }), { label: 'Refresh Nitro target server' });
-        if (!joinedGuildId) {
-          const match = state.guilds.find(g => g.name && invite?.guild?.name && g.name === invite.guild.name);
-          joinedGuildId = match?.id || null;
+    const { token, client } = await tsGetToken(accountEmail);
+    const rateLimiter = makeTsRateLimiter('nitro-post', null, { minimumGapMs: 900, account: accountEmail });
+    const requestedGuildId = String(guildId || '').trim();
+    const requestedInviteUrl = String(inviteUrl || '').trim();
+    let joinedGuildId = requestedGuildId || null;
+    let state = await enqueueTsAccount(accountEmail, () => readTsNitroState({ token, client, rateLimiter }), { label: 'Nitro post status' });
+
+    if (!joinedGuildId && requestedInviteUrl) {
+      const inviteCode = parseDiscordInvite(requestedInviteUrl);
+      tsLog('info', `Nitro: قبول دعوة السيرفر ${inviteCode} قبل وضع البوستات…`, { operation: 'nitro_post', confirmed: false, stage: 'invite', account: accountEmail });
+      const invite = await enqueueTsAccount(accountEmail, () => ts.acceptInvite({
+        token,
+        inviteCode,
+        netOpts: { client, solveCaptcha: buildSolveCaptcha({ require2Captcha: true }), rateLimiter, captchaContext: 'nitro-post-invite' },
+      }), { label: 'Join Nitro target server' });
+      joinedGuildId = String(invite?.guild?.id || invite?.guild_id || '').trim() || null;
+      state = await enqueueTsAccount(accountEmail, () => readTsNitroState({ token, client, rateLimiter }), { label: 'Refresh Nitro target server' });
+      if (!joinedGuildId) {
+        const match = state.guilds.find(g => g.name && invite?.guild?.name && g.name === invite.guild.name);
+        joinedGuildId = match?.id || null;
+      }
+    }
+
+    if (!joinedGuildId) throw new Error('اختر سيرفر من القائمة أو أدخل رابط دعوة صالحاً');
+    const targetGuild = state.guilds.find(g => String(g.id) === joinedGuildId);
+    if (!targetGuild) throw new Error('الحساب ليس عضواً في السيرفر الهدف بعد التحقق من بيانات الحساب');
+    if (state.cooldown.active) {
+      const e = new Error(`بوستات Nitro في كول داون حتى ${state.cooldown.endsAt}`);
+      e.code = 'NITRO_COOLDOWN_ACTIVE'; e.cooldown = state.cooldown;
+      throw e;
+    }
+    if (state.availableSlotIds.length < requestedCount) {
+      const waitUntil = state.nextSlotCooldownAt ? ` — أقرب انتهاء للكول داون: ${state.nextSlotCooldownAt}` : '';
+      const e = new Error(`لا يوجد عدد كافٍ من بوستات Nitro القابلة للوضع أو النقل (المتاح: ${state.availableSlotIds.length}، المطلوب: ${requestedCount})${waitUntil}`);
+      e.code = 'NITRO_SLOTS_INSUFFICIENT'; e.cooldown = state.cooldown;
+      throw e;
+    }
+
+    const slotIds = state.availableSlotIds.slice(0, requestedCount);
+    tsLog('info', `Nitro: وضع ${requestedCount} بوست على ${targetGuild.name}…`, { operation: 'nitro_post', confirmed: false, stage: 'apply', account: accountEmail, guild: joinedGuildId });
+    await enqueueTsAccount(accountEmail, () => ts.applyPremiumGuildSubscriptions({
+      token,
+      guildId: joinedGuildId,
+      slotIds,
+      netOpts: { client, rateLimiter },
+    }), { label: 'Apply Nitro boosts' });
+
+    const after = await enqueueTsAccount(accountEmail, () => readTsNitroState({ token, client, rateLimiter }), { label: 'Verify Nitro boosts' });
+    const appliedCount = after.slots.filter(s => s.applied && s.guildId === joinedGuildId).length;
+    const verified = appliedCount >= requestedCount;
+    tsLog(verified ? 'success' : 'warn', `Nitro: ${verified ? 'تم التحقق من وضع البوستات' : 'تم إرسال الطلب لكن تعذر التحقق الكامل'} (${appliedCount}/${requestedCount})`, { operation: 'nitro_post', confirmed: verified, stage: verified ? 'verified' : 'unverified', account: accountEmail, guild: joinedGuildId });
+    return { email: accountEmail, verified, guild: targetGuild, requestedCount, appliedCount, state: after };
+  }
+
+  async function runTsNitroPostBatch(emails, options = {}) {
+    const results = new Array(emails.length);
+    let cursor = 0;
+    const worker = async () => {
+      while (true) {
+        const index = cursor++;
+        if (index >= emails.length) return;
+        const email = emails[index];
+        const startedAt = Date.now();
+        try {
+          results[index] = {
+            index,
+            ...(await executeTsNitroPost(email, options)),
+            ok: true,
+            durationMs: Date.now() - startedAt,
+          };
+        } catch (e) {
+          const message = redactSecretText(e?.message || String(e)).slice(0, 300);
+          tsLog('error', `Nitro: فشل وضع البوست — ${message}`, { operation: 'nitro_post', confirmed: false, stage: 'failed', account: email });
+          results[index] = {
+            index,
+            email,
+            ok: false,
+            verified: false,
+            error: message,
+            code: e?.code || 'NITRO_POST_FAILED',
+            cooldown: e?.cooldown || null,
+            durationMs: Date.now() - startedAt,
+          };
         }
       }
+    };
 
-      if (!joinedGuildId) throw new Error('اختر سيرفر من القائمة أو أدخل رابط دعوة صالحاً');
-      const targetGuild = state.guilds.find(g => String(g.id) === joinedGuildId);
-      if (!targetGuild) throw new Error('الحساب ليس عضواً في السيرفر الهدف بعد التحقق من بيانات الحساب');
-      if (state.cooldown.active) {
-        const e = new Error(`بوستات Nitro في كول داون حتى ${state.cooldown.endsAt}`);
-        e.code = 'NITRO_COOLDOWN_ACTIVE'; e.cooldown = state.cooldown;
-        throw e;
-      }
-      if (state.availableSlotIds.length < requestedCount) {
-        const waitUntil = state.nextSlotCooldownAt ? ` — أقرب انتهاء للكول داون: ${state.nextSlotCooldownAt}` : '';
-        const e = new Error(`لا يوجد عدد كافٍ من بوستات Nitro القابلة للوضع أو النقل (المتاح: ${state.availableSlotIds.length}، المطلوب: ${requestedCount})${waitUntil}`);
-        e.code = 'NITRO_SLOTS_INSUFFICIENT'; e.cooldown = state.cooldown;
-        throw e;
-      }
-      const slotIds = state.availableSlotIds.slice(0, requestedCount);
-      tsLog('info', `Nitro: وضع ${requestedCount} بوست على ${targetGuild.name}…`, { operation: 'nitro_post', confirmed: false, stage: 'apply', account: email, guild: joinedGuildId });
-      await enqueueTsAccount(email, () => ts.applyPremiumGuildSubscriptions({
-        token,
-        guildId: joinedGuildId,
-        slotIds,
-        netOpts: { client, rateLimiter },
-      }), { label: 'Apply Nitro boosts' });
+    const parallelism = Math.min(3, Math.max(1, Number(options.parallelism) || 3), emails.length);
+    await Promise.all(Array.from({ length: parallelism }, worker));
+    return results;
+  }
 
-      const after = await enqueueTsAccount(email, () => readTsNitroState({ token, client, rateLimiter }), { label: 'Verify Nitro boosts' });
-      const appliedCount = after.slots.filter(s => s.applied && s.guildId === joinedGuildId).length;
-      const verified = appliedCount >= requestedCount;
-      tsLog(verified ? 'success' : 'warn', `Nitro: ${verified ? 'تم التحقق من وضع البوستات' : 'تم إرسال الطلب لكن تعذر التحقق الكامل'} (${appliedCount}/${requestedCount})`, { operation: 'nitro_post', confirmed: verified, stage: verified ? 'verified' : 'unverified', account: email, guild: joinedGuildId });
-      ok(res, { success: true, verified, guild: targetGuild, requestedCount, appliedCount, state: after });
+  app.post('/api/ts/nitro/post', async (req, res) => {
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    if (!email) return fail(res, new Error('email required'));
+    try {
+      const result = await executeTsNitroPost(email, req.body);
+      ok(res, { success: true, ...result });
     } catch (e) {
       tsLog('error', `Nitro: فشل وضع البوست — ${e.message || String(e)}`, { operation: 'nitro_post', confirmed: false, stage: 'failed', account: email });
+      fail(res, e);
+    }
+  });
+
+  app.post('/api/ts/nitro/post-bulk', async (req, res) => {
+    const requestedEmails = Array.isArray(req.body?.emails) ? req.body.emails : [];
+    const emails = [...new Set(requestedEmails
+      .map(value => String(value || '').trim().toLowerCase())
+      .filter(email => tsFindAccount(email)))].slice(0, 100);
+    if (!emails.length) return fail(res, new Error('لا توجد حسابات صالحة لوضع البوستات'));
+
+    try {
+      tsLog('info', `Nitro: بدء وضع البوستات بالتوازي على ${emails.length} حساب`, { operation: 'nitro_post_bulk', confirmed: false, stage: 'started', accounts: emails.length });
+      const results = await runTsNitroPostBatch(emails, req.body);
+      const successful = results.filter(result => result?.ok === true).length;
+      ok(res, {
+        success: true,
+        total: emails.length,
+        completed: results.length,
+        successful,
+        failed: emails.length - successful,
+        results,
+      });
+    } catch (e) {
+      tsLog('error', `Nitro: فشلت العملية الجماعية — ${e.message || String(e)}`, { operation: 'nitro_post_bulk', confirmed: false, stage: 'failed' });
       fail(res, e);
     }
   });

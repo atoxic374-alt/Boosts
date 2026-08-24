@@ -26,6 +26,10 @@ pnpm test:operations
 
 The Nitro cooldown display uses the account response from Discord. It does not fabricate a local cooldown when the account endpoint cannot provide one.
 
+### Multi-account Nitro posting
+
+Open **Nitro Boosts**, select multiple saved accounts in the **Accounts to use** list with Ctrl/Cmd-click, then choose the target server or invite and submit. Selected accounts are processed concurrently with a maximum of three workers. Each account still uses its own serialized queue and rate limiter, and the result panel reports completion and verification per account. The original single-account endpoint remains available at `/api/ts/nitro/post`; the multi-account endpoint is `/api/ts/nitro/post-bulk`.
+
 ## Security
 
 Account credentials are encrypted at rest using AES-256-GCM. Every secret gets a fresh random IV and authentication tag. Records are stored as an encrypted envelope such as `v1:<iv>:<tag>:<ciphertext>`; plaintext records remain readable only for one-way migration when a write occurs.
