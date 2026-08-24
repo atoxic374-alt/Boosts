@@ -1,5 +1,5 @@
 const assert = require('assert');
-const { rateLimitInfoFromResponse, createRateLimitGuard, deletePremiumGuildSubscription, isNoActivePremiumGuildSubscriptionCooldown } = require('../lib/trueStudio');
+const { rateLimitInfoFromResponse, createRateLimitGuard, deletePremiumGuildSubscription, getPremiumGuildSubscriptionCooldown, isNoActivePremiumGuildSubscriptionCooldown } = require('../lib/trueStudio');
 
 const route = rateLimitInfoFromResponse({
   status: 429,
@@ -57,7 +57,32 @@ const snapshot = guard.snapshot();
 assert.equal(snapshot.routes, 1, 'guard should remember the route');
 assert.equal(snapshot.buckets, 1, 'guard should remember the bucket');
 
+const mockClient = {
+  superPropsB64: '',
+  currentPage: 'https://discord.com/',
+  http: async ({ method, url }) => {
+    assert.equal(method, 'GET');
+    assert.match(url, /premium\/subscriptions\/cooldown$/);
+    return {
+      status: 400,
+      data: { code: 10050, message: 'Unknown premium server subscribe cooldown' },
+      headers: {},
+    };
+  },
+};
+
 Promise.all([
   assert.rejects(() => deletePremiumGuildSubscription({ token: 'test', guildId: 'bad', subscriptionId: '123456789012345678' }), /Invalid source guild id/),
   assert.rejects(() => deletePremiumGuildSubscription({ token: 'test', guildId: '123456789012345678', subscriptionId: 'bad' }), /Invalid premium subscription id/),
+  (async () => {
+    const cooldown = await getPremiumGuildSubscriptionCooldown({ token: 'test', netOpts: { client: mockClient } });
+    assert.deepEqual(cooldown, {
+      ends_at: null,
+      remaining: null,
+      limit: null,
+      active: false,
+      source: 'discord-no-active-cooldown',
+      discordCode: 10050,
+    });
+  })(),
 ]).then(() => console.log('Botv3 operations logic tests passed'));
