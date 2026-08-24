@@ -204,7 +204,7 @@ const ts = require('./lib/trueStudio');
   const TS_LOG_MAX = 250;
   function tsLog(level, msg, meta = null) {
     const s = tsSession();
-    const entry = { ts: Date.now(), level, msg: String(msg).slice(0, 500) };
+    const entry = { ts: Date.now(), level, msg: formatTsLogMessage(msg).slice(0, 500) };
     if (meta && typeof meta === 'object') Object.assign(entry, meta);
     s.log.push(entry);
     if (s.log.length > TS_LOG_MAX) s.log.splice(0, s.log.length - TS_LOG_MAX);
@@ -215,7 +215,7 @@ const ts = require('./lib/trueStudio');
     const s = tsSession();
     return {
       state: s.state,
-      account: s.account,
+      account: s.account ? tsAccountDisplayName(s.account) : null,
       rules: s.rules,
       total: s.total,
       done: s.done,
@@ -316,9 +316,34 @@ const ts = require('./lib/trueStudio');
       .sort((a, b) => (a.expiresAt || Infinity) - (b.expiresAt || Infinity));
   }
 
+  function formatTsLogMessage(message) {
+    let output = String(message == null ? '' : message);
+    for (const [index, account] of tsAccountsRaw().entries()) {
+      const email = String(account?.email || '').trim();
+      if (!email) continue;
+      const displayName = tsAccountDisplayName(email, index);
+      if (displayName && displayName !== email) output = output.split(email).join(displayName);
+    }
+    return output;
+  }
+
+  function tsAccountDisplayName(email, fallbackIndex = null) {
+    const account = tsFindAccount(email);
+    const verify = account?.verify && typeof account.verify === 'object' ? account.verify : {};
+    const username = String(verify.username || '').trim();
+    const globalName = String(verify.globalName || '').trim();
+    if (username) return username.slice(0, 80);
+    if (globalName) return globalName.slice(0, 80);
+    const index = fallbackIndex == null
+      ? tsAccountsRaw().findIndex(item => String(item.email || '').toLowerCase() === String(email || '').toLowerCase())
+      : fallbackIndex;
+    return `Account ${Math.max(1, Number(index) + 1)}`;
+  }
+
   function tsAccountsPublic() {
-    return tsAccountsRaw().map(a => ({
+    return tsAccountsRaw().map((a, index) => ({
       email: a.email,
+      displayName: tsAccountDisplayName(a.email, index),
       hasPassword: !!a.password,
       hasTotp: !!a.totpSecret,
       hasDirectToken: !!a.directToken,
@@ -1498,12 +1523,14 @@ const ts = require('./lib/trueStudio');
         const status = String(verify.status || 'unchecked');
         return {
           id: `account-${index + 1}`,
-          label: isTsBulkTokenAccount(email) ? `account-${index + 1}` : email.replace(/^(.).*(?=@)/, '$1***'),
+          label: tsAccountDisplayName(email, index),
           status,
           ok: verify.ok === true,
           lastCheckedAt: verify.at || null,
           message: redactSecretText(verify.message || '').slice(0, 240),
           username: String(verify.username || '').slice(0, 80),
+          globalName: String(verify.globalName || '').slice(0, 80),
+          displayName: tsAccountDisplayName(email, index),
           userId: String(verify.userId || '').slice(0, 32),
           nitro: {
             totalSlots: Number.isFinite(Number(nitro.totalSlots)) ? Number(nitro.totalSlots) : null,
@@ -2418,13 +2445,15 @@ const ts = require('./lib/trueStudio');
         if (index >= emails.length) return;
         const email = emails[index];
         const startedAt = Date.now();
-        const accountLabel = `#${index + 1}/${emails.length} · ${email}`;
+          const displayName = tsAccountDisplayName(email, index);
+          const accountLabel = `#${index + 1}/${emails.length} · ${displayName}`;
         tsLog('info', `[Nitro][${accountLabel}][queue] بدء معالجة الحساب`, {
           operation: 'nitro_post', confirmed: false, stage: 'queued', account: email, position: index + 1, total: emails.length,
         });
         try {
           results[index] = {
             index,
+            displayName: tsAccountDisplayName(email, index),
             ...(await executeTsNitroPost(email, { ...options, months: options.monthsByEmail?.[email] ?? options.months }, { position: index + 1, total: emails.length })),
             ok: true,
             rateLimited: false,
@@ -2447,6 +2476,7 @@ const ts = require('./lib/trueStudio');
           });
           results[index] = {
             index,
+            displayName: tsAccountDisplayName(email, index),
             email,
             ok: false,
             verified: false,
@@ -2786,6 +2816,7 @@ const ts = require('./lib/trueStudio');
           mfa: verify.mfa,
           mfaEnabled: verify.user?.mfa_enabled === true,
           username: verify.user?.username || '',
+          globalName: verify.user?.globalName || '',
           userId: verify.user?.id || '',
           at: verify.at,
         };

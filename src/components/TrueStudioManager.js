@@ -843,7 +843,7 @@ export class TrueStudioManager {
     const summary = `<span class="ts-server-result-${result.ok ? 'ok' : 'warn'}">${escapeHtml(result.message || '')}</span>`;
     if (!this.nitroBulkResults?.length) return summary;
     const rows = this.nitroBulkResults.map(item => {
-      const label = item.email || t('ts.common_unknown_account');
+      const label = item.displayName || t('ts.account_fallback_name');
       const message = item.rateLimited
         ? `${t('ts.nitro_rate_limited')} · ${item.error || t('ts.nitro_bulk_failed')}${item.retryAt ? ` · ${t('ts.nitro_retry_at')} ${new Date(item.retryAt).toLocaleTimeString('ar-SA')}` : ''}`
         : (item.ok ? `${t('ts.nitro_bulk_success')} · ${item.appliedCount ?? 0}/${item.requestedCount ?? this.nitroPostCount}` : (item.error || t('ts.nitro_bulk_failed')));
@@ -1248,7 +1248,7 @@ export class TrueStudioManager {
       <div class="ts-account-holds">
         ${holds.map(([email, h]) => `
           <div class="ts-account-hold">
-            <span class="ts-account-hold-main">${escapeHtml(email)} · rate limit</span>
+            <span class="ts-account-hold-main">${escapeHtml(this.accounts.find(account => String(account.email || '').toLowerCase() === String(email).toLowerCase())?.displayName || t('ts.account_fallback_name'))} · rate limit</span>
             <span class="ts-account-hold-time" data-ts-account-hold-until="${Number(h.waitUntilTs || 0)}">${this._fmtMs(Math.max(0, Number(h.waitUntilTs || 0) - now))}</span>
           </div>
         `).join('')}
@@ -1266,16 +1266,20 @@ export class TrueStudioManager {
     // Build display pool: active account first, then all other saved accounts
     const seen = new Set();
     const rows = [];
-    if (activeEmail) { seen.add(activeEmail); rows.push({ email: activeEmail, isActive: true }); }
+    if (activeEmail) {
+      seen.add(activeEmail);
+      const activeAccount = (this.accounts || []).find(a => String(a.email || '').toLowerCase() === activeEmail);
+      rows.push({ email: activeEmail, displayName: activeAccount?.displayName || t('ts.account_fallback_name'), isActive: true });
+    }
     for (const a of (this.accounts || [])) {
       const ae = (a.email || '').toLowerCase();
-      if (!seen.has(ae)) { seen.add(ae); rows.push({ email: ae, isActive: false }); }
+      if (!seen.has(ae)) { seen.add(ae); rows.push({ email: ae, displayName: a.displayName || t('ts.account_fallback_name'), isActive: false }); }
     }
 
     // Only render panel if we have at least 1 account to show
     if (rows.length === 0) return '';
 
-    const cells = rows.map(({ email, isActive }) => {
+    const cells = rows.map(({ email, displayName, isActive }) => {
       const p = paused[email];
       const until = p ? Number(typeof p === 'number' ? p : (p.waitUntilTs || 0)) : 0;
       const classification = typeof p === 'object' ? String(p.classification || '') : '';
@@ -1293,7 +1297,7 @@ export class TrueStudioManager {
         return `
           <div class="ts-pool-row ts-pool-row--active">
             <span class="ts-pool-dot ts-pool-dot--active"></span>
-            <span class="ts-pool-email">${escapeHtml(email)}</span>
+            <span class="ts-pool-email">${escapeHtml(displayName)}</span>
             <span class="ts-pool-badge ts-pool-badge--active">نشط ●</span>
           </div>`;
       }
@@ -1301,7 +1305,7 @@ export class TrueStudioManager {
         return `
           <div class="ts-pool-row ts-pool-row--paused">
             <span class="ts-pool-dot ts-pool-dot--paused"></span>
-            <span class="ts-pool-email">${escapeHtml(email)}</span>
+            <span class="ts-pool-email">${escapeHtml(displayName)}</span>
             <span class="ts-pool-badge ts-pool-badge--paused" data-ts-account-hold-until="${until}" title="${escapeHtml(pauseReason || pauseLabel)}">${escapeHtml(pauseLabel)} · ${this._fmtMs(Math.max(0, until - now))}</span>
           </div>`;
       }
@@ -1369,7 +1373,7 @@ export class TrueStudioManager {
     if (a.hasDirectToken) badge += ' • token';
     if (a.nitroPlanMonths) badge += ` • Nitro ${a.nitroPlanMonths}${t('ts.nitro_months_short')}`;
     if (v) badge += v.ok ? '  [OK]' : '  [CHECK]';
-    return escapeHtml(a.email) + escapeHtml(badge);
+    return escapeHtml(a.displayName || t('ts.account_fallback_name')) + escapeHtml(badge);
   }
 
   _verifyLabel(sel) {
