@@ -23,6 +23,7 @@ export class TrueStudioManager {
     this.selectedEmail = null;
     this.form = {
       email: '',
+      nickname: '',
       password: '',
       totpSecret: '',
       directToken: '',
@@ -123,6 +124,10 @@ export class TrueStudioManager {
     this.healthJob = null;
     this.healthJobInFlight = false;
     this._nitroTicker = null;
+    this._accountConnectInFlight = false;
+    this._serverJoinInFlight = false;
+    this._nitroPostInFlight = false;
+    this._nitroMoveInFlight = false;
   }
 
   async init() {
@@ -482,11 +487,11 @@ export class TrueStudioManager {
           <div class="ts-simple-stats"><span><b>${totalAccounts}</b> حساب</span><span><b>${savedBulk}</b> توكن دفعي</span></div>
         </section>
         <section class="ts-simple-grid" id="ts-cat-accounts">
-          <div class="ts-card ts-credentials-card ts-simple-main"><div class="ts-card-head"><div class="ts-card-title ar">إضافة الحسابات</div><span class="ts-card-step">1</span></div><div class="ts-method-banner"><span class="ts-method-badge token">${escapeHtml(t('ts.method_a_badge'))}</span><span class="ts-method-hint">للجدد: أضف توكن واحد أو مجموعة توكنات مع مدة النيترو، ثم اضغط فحص.</span></div><div class="ts-field ts-nitro-months-field"><div class="ts-field-label">مدة النيترو للحساب / التوكنات</div><select id="ts-account-nitro-months" class="ts-input">${[1, 2, 3, 6, 12, 24, 36].map(value => `<option value="${value}" ${value === Number(this.accountNitroMonths) ? 'selected' : ''}>${value} ${escapeHtml(t('ts.nitro_months') || 'شهر')}</option>`).join('')}</select><div class="ts-field-hint ok">تُحفظ المدة مع الحساب وتظهر في اختيارات البوست والنقل.</div></div><div class="ts-field"><div class="ts-field-label">Discord User Token</div><input type="password" id="ts-direct-token" class="ts-input ltr" value="" placeholder="${sel?.hasDirectToken ? '•••••• ' + escapeAttr(t('ts.direct_token_saved_ph')) : escapeAttr(t('ts.direct_token_ph'))}" autocomplete="off" />${sel?.hasDirectToken ? `<div class="ts-field-hint ok">${escapeHtml(t('ts.direct_token_saved_hint'))}</div>` : `<div class="ts-field-hint">ألصق توكن واحد هنا أو استخدم مربع التوكنات المتعددة بالأسفل.</div>`}</div><details class="ts-method-collapsible"><summary><span class="ts-method-badge email">${escapeHtml(t('ts.method_b_badge'))}</span><span class="ts-method-hint">اختياري للحسابات التي تستخدم إيميل وكلمة مرور</span></summary><div class="ts-form-grid ts-method-body"><div class="ts-field"><div class="ts-field-label">Email</div><input type="email" id="ts-email" class="ts-input ltr" value="${escapeAttr(this.form.email)}" autocomplete="off" /></div><div class="ts-field"><div class="ts-field-label">Password</div><input type="password" id="ts-password" class="ts-input ltr" value="" autocomplete="off" /></div><div class="ts-field"><div class="ts-field-label">2FA Secret</div><input type="text" id="ts-totp" class="ts-input totp" value="" autocomplete="off" /></div></div></details><div class="ts-simple-actions"><button class="ts-btn mint" id="ts-acct-save">${escapeHtml(t('ts.connect_account'))}</button><button class="ts-btn" id="ts-acct-test-all" ${this.accounts.length ? '' : 'disabled'}>${escapeHtml(t('ts.test_all_accounts'))}</button></div></div>
+          <div class="ts-card ts-credentials-card ts-simple-main"><div class="ts-card-head"><div class="ts-card-title ar">إضافة الحسابات</div><span class="ts-card-step">1</span></div><div class="ts-method-banner"><span class="ts-method-badge token">${escapeHtml(t('ts.method_a_badge'))}</span><span class="ts-method-hint">أضف الحساب بالنيكنيم والتوكن فقط؛ لا نعرض ولا نطلب البريد أو الباسورد.</span></div><div class="ts-field"><div class="ts-field-label">Nickname</div><input type="text" id="ts-nickname" class="ts-input" value="${escapeAttr(this.form.nickname)}" placeholder="مثال: Ahmed Nitro 1" autocomplete="off" /></div><div class="ts-field ts-nitro-months-field"><div class="ts-field-label">مدة النيترو للحساب / التوكنات</div><select id="ts-account-nitro-months" class="ts-input">${[1, 2, 3, 6, 12, 24, 36].map(value => `<option value="${value}" ${value === Number(this.accountNitroMonths) ? 'selected' : ''}>${value} ${escapeHtml(t('ts.nitro_months') || 'شهر')}</option>`).join('')}</select><div class="ts-field-hint ok">تُحفظ المدة مع الحساب وتظهر في اختيارات البوست والنقل.</div></div><div class="ts-field"><div class="ts-field-label">Discord User Token</div><input type="password" id="ts-direct-token" class="ts-input ltr" value="" placeholder="${sel?.hasDirectToken ? '•••••• ' + escapeAttr(t('ts.direct_token_saved_ph')) : escapeAttr(t('ts.direct_token_ph'))}" autocomplete="off" />${sel?.hasDirectToken ? `<div class="ts-field-hint ok">${escapeHtml(t('ts.direct_token_saved_hint'))}</div>` : `<div class="ts-field-hint">ألصق توكن واحد هنا أو استخدم مربع التوكنات المتعددة بالأسفل.</div>`}</div><div class="ts-simple-actions"><button class="ts-btn mint" id="ts-acct-save" ${this._accountConnectInFlight ? 'disabled' : ''}>${this._accountConnectInFlight ? 'جارٍ الحفظ…' : escapeHtml(t('ts.connect_account'))}</button><button class="ts-btn" id="ts-acct-test-all" ${this.accounts.length ? '' : 'disabled'}>${escapeHtml(t('ts.test_all_accounts'))}</button></div></div>
           ${this._renderBulkTokenCard()}
           <div class="ts-card ts-accounts-card"><div class="ts-card-head"><div class="ts-card-title ar">الحساب النشط</div><span class="ts-card-step">2</span></div><div class="ts-field"><div class="ts-field-label">${escapeHtml(t('ts.active_account'))}</div><div class="ts-account-row"><button class="ts-btn danger" id="ts-acct-delete" ${sel ? '' : 'disabled'}>${escapeHtml(t('ts.delete'))}</button><button class="ts-btn" id="ts-acct-test" ${sel ? '' : 'disabled'}>${escapeHtml(t('ts.test_account'))}</button><select class="ts-select" id="ts-acct-select"><option value="">${escapeHtml(t('ts.choose_account'))}</option>${this.accounts.map(a => `<option value="${escapeAttr(a.email)}" ${a.email === this.selectedEmail ? 'selected' : ''}>${this._optionLabel(a)}</option>`).join('')}</select></div><div id="ts-verify-info" class="ts-verify-info">${this._verifyLabel(sel)}</div>${this.accounts.length === 0 ? `<div class="ts-account-empty">${escapeHtml(t('ts.no_connected_accounts'))}</div>` : ''}</div></div>
           <details class="ts-card ts-simple-collapsed"><summary class="ts-card-head"><span class="ts-collapse-title">تفاصيل الحسابات والفحص</span><span class="ts-collapse-arrow"></span></summary>${this._renderDashboard()}</details>
-          <div class="ts-card ts-server-join-card"><div class="ts-card-head"><div class="ts-card-title ar">${escapeHtml(t('ts.join_server_title'))}</div><span class="ts-card-step">3</span></div><div class="ts-server-join-intro">${escapeHtml(t('ts.join_server_hint'))}</div><div class="ts-server-join-row"><div class="ts-field"><div class="ts-field-label">${escapeHtml(t('ts.server_invite_label'))}</div><input type="url" id="ts-server-invite" class="ts-input ltr" value="${escapeAttr(this.serverInviteUrl)}" placeholder="https://discord.gg/..." autocomplete="off" /></div><button class="ts-btn mint ts-server-join-btn" id="ts-server-join" ${this.selectedEmail ? '' : 'disabled'}>${escapeHtml(t('ts.join_server_button'))}</button></div><div class="ts-server-captcha-check"><div><strong>${escapeHtml(t('ts.join_server_captcha_title'))}</strong><span>${this._renderServerCaptchaCheck()}</span></div><button class="ts-btn ts-btn-xs" id="ts-server-captcha-check">${escapeHtml(t('ts.join_server_captcha_verify'))}</button></div><div id="ts-server-join-result" class="ts-server-join-result">${this._renderServerJoinResult()}</div></div>
+          <div class="ts-card ts-server-join-card"><div class="ts-card-head"><div class="ts-card-title ar">${escapeHtml(t('ts.join_server_title'))}</div><span class="ts-card-step">3</span></div><div class="ts-server-join-intro">${escapeHtml(t('ts.join_server_hint'))}</div><div class="ts-server-join-row"><div class="ts-field"><div class="ts-field-label">${escapeHtml(t('ts.server_invite_label'))}</div><input type="url" id="ts-server-invite" class="ts-input ltr" value="${escapeAttr(this.serverInviteUrl)}" placeholder="https://discord.gg/..." autocomplete="off" /></div><button class="ts-btn mint ts-server-join-btn" id="ts-server-join" ${this.selectedEmail && !this._serverJoinInFlight ? '' : 'disabled'}>${escapeHtml(t('ts.join_server_button'))}</button></div><div class="ts-server-captcha-check"><div><strong>${escapeHtml(t('ts.join_server_captcha_title'))}</strong><span>${this._renderServerCaptchaCheck()}</span></div><button class="ts-btn ts-btn-xs" id="ts-server-captcha-check">${escapeHtml(t('ts.join_server_captcha_verify'))}</button></div><div id="ts-server-join-result" class="ts-server-join-result">${this._renderServerJoinResult()}</div></div>
           ${this._renderCaptchaSettings()}
           <div class="ts-nitro-post-trigger"><button class="ts-btn mint" id="ts-nitro-post-open">${icon('bolt', 'ts-inline-icon')} ${escapeHtml(t('ts.nitro_post_button'))}</button><button class="ts-btn" id="ts-nitro-move-open">${icon('refresh', 'ts-inline-icon')} ${escapeHtml(t('ts.nitro_move_button') || 'تغيير سيرفر البوست')}</button><span>${escapeHtml(t('ts.nitro_post_trigger_hint'))}</span></div>
           ${this.nitroPostOpen ? this._renderNitroPostCard() : ''}
@@ -688,7 +693,7 @@ export class TrueStudioManager {
                 <div class="ts-field-label">${t('ts.server_invite_label')}</div>
                 <input type="url" id="ts-server-invite" class="ts-input ltr" value="${escapeAttr(this.serverInviteUrl)}" placeholder="https://discord.gg/..." autocomplete="off" />
               </div>
-              <button class="ts-btn mint ts-server-join-btn" id="ts-server-join" ${this.selectedEmail ? '' : 'disabled'}>${t('ts.join_server_button')}</button>
+              <button class="ts-btn mint ts-server-join-btn" id="ts-server-join" ${this.selectedEmail && !this._serverJoinInFlight ? '' : 'disabled'}>${t('ts.join_server_button')}</button>
             </div>
             <div class="ts-server-captcha-note"><span class="ts-server-captcha-icon">${icon('shield', 'ts-inline-icon')}</span>${escapeHtml(t('ts.join_server_captcha_hint'))}</div>
             <div class="ts-server-captcha-check">
@@ -835,6 +840,17 @@ export class TrueStudioManager {
     }
     return filtered;
   }
+
+  _autoNitroEmails(results, desiredMonths, desiredAccounts, slotField = 'availableSlots') {
+    const ready = Array.isArray(results) ? results : [];
+    return ready
+      .filter(result => result?.ready === true)
+      .filter(result => Number(this.accounts.find(account => String(account.email || '').toLowerCase() === String(result.email || '').toLowerCase())?.nitroPlanMonths || 1) === desiredMonths)
+      .filter(result => Number(result?.[slotField] ?? result?.slots?.length ?? 0) > 0)
+      .map(result => String(result.email || '').toLowerCase())
+      .slice(0, desiredAccounts);
+  }
+
   _renderNitroMoveCard() {
     const results = Array.isArray(this.nitroMovePreflight?.results) ? this.nitroMovePreflight.results : [];
     const byEmail = new Map(results.map(result => [String(result.email || '').toLowerCase(), result]));
@@ -858,20 +874,17 @@ export class TrueStudioManager {
         : this.nitroMovePreflight
           ? `<div class="ts-nitro-preflight-summary ${ready.length ? 'ok' : 'warn'}">${escapeHtml(t('ts.nitro_move_ready') || 'جاهز للتغيير')} ${ready.length} · ${escapeHtml(t('ts.nitro_preflight_excluded') || 'المستبعد')} ${excluded.length}${excluded.length ? ` · <button type="button" class="ts-link-btn" id="ts-nitro-move-show-excluded">${escapeHtml(t('ts.nitro_show_excluded') || 'عرض الأسباب')}</button>` : ''}</div>${this.nitroMoveShowExcluded ? `<div class="ts-nitro-excluded-list">${excluded.map(result => `<div><b>${escapeHtml(result.displayName || t('ts.account_fallback_name'))}</b><span>${escapeHtml(result.reason || result.status || '')}</span></div>`).join('')}</div>` : ''}`
           : '';
-    const canSubmit = preflightReady && selected.length > 0 && (this.nitroMoveTargetGuildId || this.nitroMoveInviteUrl.trim());
+    const canSubmit = preflightReady && ready.length > 0 && (this.nitroMoveTargetGuildId || this.nitroMoveInviteUrl.trim());
     return `<div class="ts-card ts-nitro-post-card ts-nitro-move-card" id="ts-nitro-move-card">
       <div class="ts-card-head"><div class="ts-card-title ar">${escapeHtml(t('ts.nitro_move_title') || 'تغيير سيرفر البوستات')}</div><span class="ts-card-step">NITRO / MOVE</span></div>
       <div class="ts-nitro-post-hint">${escapeHtml(t('ts.nitro_move_hint') || 'اختر حسابات لديها بوستات فعالة وانتهى cooldown لنقلها إلى سيرفر آخر.')}</div>
       <div class="ts-nitro-post-fields">
         <div class="ts-field ts-nitro-quick-pick"><div class="ts-field-label">اختيار سريع</div><div class="ts-mini-grid"><label>عدد الحسابات<input id="ts-nitro-move-desired-accounts" type="number" min="1" max="200" class="ts-input" value="${escapeAttr(desiredMoveAccounts)}" /></label><label>مدة النيترو<select id="ts-nitro-move-months" class="ts-input">${[1, 2, 3, 6, 12, 24, 36].map(value => `<option value="${value}" ${value === desiredMoveMonths ? 'selected' : ''}>${value} ${escapeHtml(t('ts.nitro_months') || 'شهر')}</option>`).join('')}</select></label></div><div class="ts-field-hint ok">يتم عرض الحسابات المفحوصة الجاهزة من نفس مدة النيترو فقط.</div></div>
-        <div class="ts-field ts-nitro-account-field"><div class="ts-field-label">${escapeHtml(t('ts.nitro_move_accounts') || 'الحسابات القابلة للنقل')}</div><select id="ts-nitro-move-accounts" class="ts-input ts-nitro-accounts-select" multiple size="${Math.min(6, Math.max(3, ready.length || 3))}" ${this.nitroMovePreflightLoading || !preflightReady ? 'disabled' : ''}>${accountOptions || `<option disabled>${escapeHtml(t('ts.nitro_move_no_ready') || 'لا توجد حسابات قابلة للنقل')}</option>`}</select><div class="ts-field-hint">اختر الحسابات التي لديها Boost فعلي قابل للنقل؛ الحسابات التي تملك slots فارغة فقط تستخدم وضع Boost الجديد.</div>${summary}</div>
-        <div class="ts-field"><div class="ts-field-label">${escapeHtml(t('ts.nitro_move_source') || 'السيرفر المصدر')}</div><select id="ts-nitro-move-source" class="ts-input"><option value="">${escapeHtml(t('ts.nitro_move_source_auto') || 'تلقائي إذا كان هناك سيرفر واحد')}</option>${sourceOptions}</select></div>
-        <div class="ts-field"><div class="ts-field-label">${escapeHtml(t('ts.nitro_move_target') || 'السيرفر الهدف')}</div><select id="ts-nitro-move-target" class="ts-input" ${targetOptions ? '' : 'disabled'}><option value="">${escapeHtml(targetOptions ? 'اختر السيرفر الهدف' : 'حدّد حسابًا أولًا')}</option>${targetOptions}</select></div>
-        <div class="ts-field"><div class="ts-field-label">${escapeHtml(t('ts.nitro_move_invite') || 'أو رابط دعوة الهدف')}</div><input id="ts-nitro-move-invite" type="url" class="ts-input ltr" value="${escapeAttr(this.nitroMoveInviteUrl)}" placeholder="https://discord.gg/..." autocomplete="off" /></div>
+        <div class="ts-field ts-nitro-account-field"><div class="ts-field-label">الفحص التلقائي</div>${summary}<div class="ts-field-hint ok">سيتم اختيار أول ${desiredMoveAccounts} حساب جاهز تلقائياً، والسيرفر المصدر يُكتشف من البوستات الموجودة.</div></div>
+        <div class="ts-field"><div class="ts-field-label">${escapeHtml(t('ts.nitro_move_invite') || 'رابط سيرفر الهدف')}</div><input id="ts-nitro-move-invite" type="url" class="ts-input ltr" value="${escapeAttr(this.nitroMoveInviteUrl)}" placeholder="https://discord.gg/..." autocomplete="off" /></div>
         <div class="ts-field"><div class="ts-field-label">${escapeHtml(t('ts.nitro_count_label'))}</div><select id="ts-nitro-move-count" class="ts-input"><option value="1" ${this.nitroMoveCount === 1 ? 'selected' : ''}>1</option><option value="2" ${this.nitroMoveCount === 2 ? 'selected' : ''}>2</option></select></div>
-        <div class="ts-field"><div class="ts-field-label">${escapeHtml(t('ts.nitro_parallelism_label'))}</div><select id="ts-nitro-move-parallelism" class="ts-input">${Array.from({ length: Math.min(10, Math.max(1, this.accounts.length)) }, (_, index) => index + 1).map(value => `<option value="${value}" ${value === Math.min(10, Math.max(1, Number(this.nitroParallelism) || 3)) ? 'selected' : ''}>${value}</option>`).join('')}</select></div>
       </div>
-      <div class="ts-nitro-post-actions"><button class="ts-btn" id="ts-nitro-move-refresh">${escapeHtml(t('ts.nitro_refresh'))}</button><button class="ts-btn danger" id="ts-nitro-move-submit" ${canSubmit ? '' : 'disabled'}>${escapeHtml(t('ts.nitro_move_submit') || 'Change')}</button></div>
+      <div class="ts-nitro-post-actions"><button class="ts-btn" id="ts-nitro-move-refresh">${escapeHtml(t('ts.nitro_refresh'))}</button><button class="ts-btn danger" id="ts-nitro-move-submit" ${canSubmit && !this._nitroMoveInFlight ? '' : 'disabled'}>${escapeHtml(t('ts.nitro_move_submit') || 'Change')}</button></div>
       <div id="ts-nitro-move-result" class="ts-nitro-post-result">${this._renderNitroMoveResult()}</div>
     </div>`;
   }
@@ -918,8 +931,8 @@ export class TrueStudioManager {
           : this.nitroPreflight
           ? `<div class="ts-nitro-preflight-summary ${visibleAccounts.length ? 'ok' : 'warn'}">${escapeHtml(t('ts.nitro_preflight_summary') || 'الجاهز')} ${visibleAccounts.length} · ${escapeHtml(t('ts.nitro_preflight_excluded') || 'المستبعد')} ${excludedResults.length}${excludedResults.length ? ` · <button type="button" class="ts-link-btn" id="ts-nitro-show-excluded">${escapeHtml(t('ts.nitro_show_excluded') || 'عرض أسباب الاستبعاد')}</button>` : ''}</div>${this.nitroShowExcluded ? `<div class="ts-nitro-excluded-list">${excludedResults.map(result => `<div><b>${escapeHtml(result.displayName || t('ts.account_fallback_name'))}</b><span>${escapeHtml(result.reason || result.status || '')}</span></div>`).join('')}</div>` : ''}`
           : '';
-    const readySelectedEmails = selectedEmails.filter(email => preflightByEmail.get(email)?.ready === true).slice(0, desiredAccounts);
-    const canSubmit = preflightReady && readySelectedEmails.length > 0 && (readySelectedEmails.length > 1 || (readySelectedEmails.length === 1 && state && !this.nitroStateError));
+    const readySelectedEmails = this._autoNitroEmails(preflightResults, desiredMonths, desiredAccounts, 'availableSlots');
+    const canSubmit = preflightReady && readySelectedEmails.length > 0;
     return `<div class="ts-card ts-nitro-post-card" id="ts-nitro-post-card">
       <div class="ts-card-head">
         <div class="ts-card-title ar">${escapeHtml(t('ts.nitro_post_title'))}</div>
@@ -933,21 +946,7 @@ export class TrueStudioManager {
       ${cooldown?.source === 'discord-no-active-cooldown' ? `<div class="ts-field-hint ok">${escapeHtml(t('ts.nitro_cooldown_discord_none') || 'Discord أكد عدم وجود cooldown عام فعال؛ تم فحص cooldown لكل slot.')}</div>` : ''}
       <div class="ts-nitro-post-fields">
         <div class="ts-field ts-nitro-quick-pick"><div class="ts-field-label">اختيار سريع</div><div class="ts-mini-grid"><label>عدد الحسابات<input id="ts-nitro-desired-accounts" type="number" min="1" max="200" class="ts-input" value="${escapeAttr(desiredAccounts)}" /></label><label>مدة النيترو<select id="ts-nitro-package-months" class="ts-input">${[1, 2, 3, 6, 12, 24, 36].map(value => `<option value="${value}" ${value === desiredMonths ? 'selected' : ''}>${value} ${escapeHtml(t('ts.nitro_months'))}</option>`).join('')}</select></label></div><div class="ts-field-hint ok">مثال: 4 حسابات + 3 أشهر = اختيار أول 4 حسابات جاهزة ومحفوظة كـ 3 أشهر.</div></div>
-        <div class="ts-field ts-nitro-account-field"><div class="ts-field-label">${escapeHtml(t('ts.nitro_accounts_label'))}</div>
-          <select id="ts-nitro-accounts" class="ts-input ts-nitro-accounts-select" multiple size="${Math.min(6, Math.max(3, visibleAccounts.length || 3))}" ${this.nitroPreflightLoading || !preflightReady ? 'disabled' : ''}>${accountOptions || `<option disabled>${escapeHtml(t('ts.nitro_no_ready_accounts') || 'لا توجد حسابات جاهزة بعد')}</option>`}</select>
-          <div class="ts-field-hint">${escapeHtml(t('ts.nitro_accounts_hint'))}</div>
-          ${preflightSummary}
-        </div>
-        <div class="ts-field"><div class="ts-field-label">${escapeHtml(t('ts.nitro_parallelism_label'))}</div>
-          <select id="ts-nitro-parallelism" class="ts-input">${Array.from({ length: Math.min(10, Math.max(1, (this.accounts || []).length)) }, (_, index) => index + 1).map(value => `<option value="${value}" ${value === Math.min(10, Math.max(1, Number(this.nitroParallelism) || 3)) ? 'selected' : ''}>${value}</option>`).join('')}</select>
-          <div class="ts-field-hint">${escapeHtml(t('ts.nitro_parallelism_hint'))}</div>
-        </div>
-        <div class="ts-field"><div class="ts-field-label">${escapeHtml(t('ts.nitro_server_label'))}</div>
-          <select id="ts-nitro-guild" class="ts-input" ${guilds.length ? '' : 'disabled'}>
-            <option value="">${escapeHtml(guilds.length ? t('ts.nitro_choose_server') : t('ts.nitro_refresh_required'))}</option>
-            ${guilds.map(g => `<option value="${escapeAttr(g.id)}" ${g.id === this.nitroSelectedGuildId ? 'selected' : ''}>${escapeHtml(g.name)}${g.owner ? ` (${escapeHtml(t('ts.nitro_owner'))})` : ''}</option>`).join('')}
-          </select>
-        </div>
+        <div class="ts-field ts-nitro-account-field"><div class="ts-field-label">الفحص التلقائي</div>${preflightSummary}<div class="ts-field-hint ok">سيتم اختيار أول ${desiredAccounts} حساب جاهز تلقائياً حسب المدة والعدد.</div></div>
         <div class="ts-field"><div class="ts-field-label">${escapeHtml(t('ts.nitro_invite_label'))}</div>
           <input id="ts-nitro-invite" type="url" class="ts-input ltr" value="${escapeAttr(this.nitroInviteUrl)}" placeholder="https://discord.gg/..." autocomplete="off" />
         </div>
@@ -955,7 +954,7 @@ export class TrueStudioManager {
           <select id="ts-nitro-count" class="ts-input"><option value="1" ${this.nitroPostCount === 1 ? 'selected' : ''}>1</option><option value="2" ${this.nitroPostCount === 2 ? 'selected' : ''}>2</option></select>
         </div>
       </div>
-      <div class="ts-nitro-post-actions"><button class="ts-btn" id="ts-nitro-refresh">${escapeHtml(t('ts.nitro_refresh'))}</button><button class="ts-btn mint" id="ts-nitro-post-submit" ${canSubmit ? '' : 'disabled'}>${escapeHtml(t('ts.nitro_post_submit'))}</button></div>
+      <div class="ts-nitro-post-actions"><button class="ts-btn" id="ts-nitro-refresh">${escapeHtml(t('ts.nitro_refresh'))}</button><button class="ts-btn mint" id="ts-nitro-post-submit" ${canSubmit && !this._nitroPostInFlight ? '' : 'disabled'}>${escapeHtml(t('ts.nitro_post_submit'))}</button></div>
       <div class="ts-nitro-post-hint">${escapeHtml(selectedEmails.length > 1 ? t('ts.nitro_bulk_hint') : t('ts.nitro_post_hint'))}</div>
       <div id="ts-nitro-post-result" class="ts-nitro-post-result">${this._renderNitroPostResult()}</div>
     </div>`;
@@ -4574,6 +4573,7 @@ export class TrueStudioManager {
     $('#ts-health-retry')?.addEventListener('click', () => this.retryHealthCheck());
 
     $('#ts-email')?.addEventListener('input', (e) => this.form.email = e.target.value.trim());
+    $('#ts-nickname')?.addEventListener('input', (e) => this.form.nickname = e.target.value.trim());
     $('#ts-password')?.addEventListener('input', (e) => this.form.password = e.target.value);
     $('#ts-totp')?.addEventListener('input', (e) => this.form.totpSecret = e.target.value.replace(/\s+/g, ''));
     $('#ts-direct-token')?.addEventListener('input', (e) => this.form.directToken = e.target.value.trim());
@@ -4834,37 +4834,28 @@ export class TrueStudioManager {
 
   // ── Actions ───────────────────────────────────────────
   async connectAccount() {
-    const email = (this.form.email || '').trim().toLowerCase();
-    if (!email || !email.includes('@')) {
-      showNotification(t('ts.invalid_email'), 'error');
-      return;
-    }
-    const selected = this.accounts.find(a => String(a.email || '').toLowerCase() === email);
-    const hasSavedPassword = selected?.hasPassword === true;
-    const enteredPassword = typeof this.form.password === 'string' ? this.form.password : '';
-    const enteredToken = typeof this.form.directToken === 'string' ? this.form.directToken : '';
-    if (!enteredPassword.trim() && !hasSavedPassword && !enteredToken.trim() && !selected?.hasDirectToken) {
-      showNotification(t('ts.password_required'), 'error');
-      this.contentArea.querySelector('.ts-method-collapsible')?.setAttribute('open', '');
-      this.contentArea.querySelector('#ts-password')?.focus();
-      return;
-    }
-    const payload = { email, nitroPlanMonths: Math.max(1, Math.min(36, Number(this.accountNitroMonths) || 1)) };
-    // Only send fields if the user typed them, so reconnecting does not clear saved credentials.
-    if (enteredPassword.trim()) payload.password = enteredPassword;
-    if (this.form.totpSecret) payload.totpSecret = this.form.totpSecret;
-    if (enteredToken.trim()) payload.directToken = enteredToken;
+    if (this._accountConnectInFlight) { showNotification('هناك عملية حفظ حساب شغالة الآن', 'warn'); return; }
+    const selectedInternalId = (this.selectedEmail || '').trim().toLowerCase();
+    const nickname = (this.form.nickname || '').trim();
+    const enteredToken = typeof this.form.directToken === 'string' ? this.form.directToken.trim() : '';
+    const selected = this.accounts.find(a => String(a.email || '').toLowerCase() === selectedInternalId);
+    if (!nickname && !selected) { showNotification('اكتب nickname للحساب', 'error'); this.contentArea.querySelector('#ts-nickname')?.focus(); return; }
+    if (!enteredToken && !selected?.hasDirectToken) { showNotification('ألصق توكن الحساب أولاً', 'error'); this.contentArea.querySelector('#ts-direct-token')?.focus(); return; }
+    const payload = { email: selectedInternalId || '', nickname, nitroPlanMonths: Math.max(1, Math.min(36, Number(this.accountNitroMonths) || 1)) };
+    if (enteredToken) payload.directToken = enteredToken;
+    this._accountConnectInFlight = true; this.render();
     try {
-      await window.electronAPI.tsSaveAccount(payload);
-      this.selectedEmail = email;
-      this.form.password = '';
-      this.form.totpSecret = '';
-      this.form.directToken = '';
+      const saved = await window.electronAPI.tsSaveAccount(payload);
+      this.selectedEmail = saved?.account?.email || selectedInternalId;
+      this.form.email = this.selectedEmail || '';
+      this.form.nickname = ''; this.form.password = ''; this.form.totpSecret = ''; this.form.directToken = '';
       this.nitroPackageMonths = Number(this.accountNitroMonths) || 1;
       await this.refresh();
       await this.testAccount();
     } catch (e) {
       showNotification(e.message || 'Connection failed', 'error');
+    } finally {
+      this._accountConnectInFlight = false; this.render();
     }
   }
 
@@ -4935,12 +4926,13 @@ export class TrueStudioManager {
   }
 
   async submitNitroMove() {
-    const emails = [...new Set((this.nitroMoveSelectedEmails || []).map(email => String(email || '').toLowerCase()))];
-    const ready = new Set((this.nitroMovePreflight?.results || []).filter(result => result.ready === true).map(result => String(result.email || '').toLowerCase()));
-    if (!emails.length || emails.some(email => !ready.has(email))) return showNotification(t('ts.nitro_move_no_ready') || 'اختر حسابات قابلة للنقل', 'error');
+    if (this._nitroMoveInFlight) { showNotification('عملية نقل البوست شغالة الآن', 'warn'); return; }
+    const emails = this._autoNitroEmails(this.nitroMovePreflight?.results || [], Math.max(1, Math.min(36, Number(this.nitroPackageMonths) || 1)), Math.max(1, Math.min(200, Number(this.nitroMoveDesiredAccounts) || 1)), 'transferableSlots');
+    if (!emails.length) return showNotification(t('ts.nitro_move_no_ready') || 'لا توجد حسابات قابلة للنقل تطابق العدد والمدة', 'error');
     if (!this.nitroMoveTargetGuildId && !this.nitroMoveInviteUrl.trim()) return showNotification(t('ts.nitro_move_target_required') || 'اختر السيرفر الهدف أو أدخل رابط دعوة', 'error');
     const warning = t('ts.nitro_move_confirm') || 'سيتم فك البوست من السيرفر المصدر ثم تطبيقه على السيرفر الهدف. هل تريد المتابعة؟';
     if (!window.confirm(warning)) return;
+    this._nitroMoveInFlight = true;
     this.nitroMoveResult = { ok: false, message: t('ts.nitro_move_working') || 'جارٍ تغيير السيرفر…', results: [] };
     this.render();
     try {
@@ -4951,6 +4943,8 @@ export class TrueStudioManager {
       this.nitroMoveResult = { ok: false, message: e.message || t('ts.nitro_move_failed') || 'فشل تغيير السيرفر', results: [] };
       this.render();
     }
+    this._nitroMoveInFlight = false;
+    this.render();
     showNotification(this.nitroMoveResult.message, this.nitroMoveResult.ok ? 'success' : 'warn');
   }
 
@@ -5025,11 +5019,10 @@ export class TrueStudioManager {
   }
 
   async submitNitroPost() {
-    const emails = this._getNitroSelectedEmails();
+    if (this._nitroPostInFlight) { showNotification('عملية البوست شغالة الآن', 'warn'); return; }
+    const emails = this._autoNitroEmails(this.nitroPreflight?.results || [], Math.max(1, Math.min(36, Number(this.nitroPackageMonths) || 1)), Math.max(1, Math.min(200, Number(this.nitroDesiredAccounts) || 1)), 'availableSlots');
     if (!this.nitroPreflight || this.nitroPreflightLoading) return showNotification(t('ts.nitro_preflight_loading') || 'انتظر اكتمال فحص الجاهزية', 'warn');
     if (!emails.length) return showNotification(t('ts.nitro_accounts_required'), 'error');
-    const readyEmails = new Set((this.nitroPreflight.results || []).filter(result => result.ready === true).map(result => String(result.email || '').toLowerCase()));
-    if (emails.some(email => !readyEmails.has(String(email).toLowerCase()))) return showNotification(t('ts.nitro_preflight_failed') || 'توجد حسابات غير جاهزة للبوست', 'error');
     const guildId = this.nitroSelectedGuildId || '';
     const inviteUrl = (this.nitroInviteUrl || '').trim();
     if (!guildId && !inviteUrl) return showNotification(t('ts.nitro_target_required'), 'error');
@@ -5038,6 +5031,7 @@ export class TrueStudioManager {
     const count = Math.max(1, Math.min(2, Number(this.nitroPostCount) || 1));
     const btn = this.contentArea?.querySelector('#ts-nitro-post-submit');
     if (btn) { btn.disabled = true; btn.textContent = t('ts.nitro_bulk_working'); }
+    this._nitroPostInFlight = true;
     this.nitroBulkResults = [];
     this.nitroPostResult = { ok: false, message: emails.length > 1 ? t('ts.nitro_bulk_working') : t('ts.nitro_post_working') };
     this.render();
@@ -5074,6 +5068,9 @@ export class TrueStudioManager {
       this.nitroPostResult = { ok: false, message: e.message || t('ts.nitro_post_failed') };
       showNotification(this.nitroPostResult.message, 'error');
       this.render();
+    } finally {
+      this._nitroPostInFlight = false;
+      this.render();
     }
   }
 
@@ -5097,6 +5094,7 @@ export class TrueStudioManager {
   }
 
   async joinServer() {
+    if (this._serverJoinInFlight) { showNotification('عملية إدخال السيرفر شغالة الآن', 'warn'); return; }
     if (!this.selectedEmail) {
       showNotification(t('ts.pick_account_first'), 'error');
       return;
@@ -5109,6 +5107,7 @@ export class TrueStudioManager {
     }
     const btn = this.contentArea.querySelector('#ts-server-join');
     const resultEl = this.contentArea.querySelector('#ts-server-join-result');
+    this._serverJoinInFlight = true;
     if (btn) { btn.disabled = true; btn.textContent = t('ts.join_server_connecting'); }
     if (resultEl) resultEl.innerHTML = `<span class="ts-server-result-idle">${escapeHtml(t('ts.join_server_connecting'))}</span>`;
     try {
@@ -5123,6 +5122,7 @@ export class TrueStudioManager {
       this.serverJoinResult = { ok: false, message: e.message || t('ts.join_server_failed'), guild: null };
       showNotification(this.serverJoinResult.message, 'error');
     } finally {
+      this._serverJoinInFlight = false;
       this.render();
     }
   }
