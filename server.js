@@ -349,6 +349,8 @@ const ts = require('./lib/trueStudio');
   function tsAccountDisplayName(email, fallbackIndex = null) {
     const account = tsFindAccount(email);
     const verify = account?.verify && typeof account.verify === 'object' ? account.verify : {};
+    const nickname = String(account?.nickname || '').trim();
+    if (nickname) return nickname.slice(0, 80);
     const username = String(verify.username || '').trim();
     const globalName = String(verify.globalName || '').trim();
     if (username) return username.slice(0, 80);
@@ -362,6 +364,7 @@ const ts = require('./lib/trueStudio');
   function tsAccountsPublic() {
     return tsAccountsRaw().map((a, index) => ({
       email: a.email,
+      nickname: a.nickname || '',
       displayName: tsAccountDisplayName(a.email, index),
       hasPassword: !!a.password,
       hasTotp: !!a.totpSecret,
@@ -1448,36 +1451,37 @@ const ts = require('./lib/trueStudio');
 
   app.post('/api/ts/accounts', (req, res) => {
     const { email, password, totpSecret, directToken } = req.body || {};
+    const nickname = String(req.body?.nickname || '').trim().slice(0, 80);
     const nitroPlanMonths = Math.max(1, Math.min(36, Math.floor(Number(req.body?.nitroPlanMonths) || Number(req.body?.months) || 1)));
-    if (!email || typeof email !== 'string') return fail(res, new Error('Email is required'));
-    const cleanEmail = email.trim().toLowerCase();
-    if (cleanEmail.length > 254 || !cleanEmail.includes('@')) return fail(res, new Error('Invalid email'));
+    const incomingDirectToken = typeof directToken === 'string' ? directToken.trim() : '';
+    const incomingPassword = typeof password === 'string' ? password : '';
+    const cleanEmail = String(email || '').trim().toLowerCase();
+
     if (password !== undefined && typeof password !== 'string') return fail(res, new Error('Password must be a string'));
     if (totpSecret && !ts.isValidTotpSecret(totpSecret)) return fail(res, new Error('Invalid 2FA secret (must be a base32 string)'));
     if (directToken && typeof directToken !== 'string') return fail(res, new Error('Token must be a string'));
+    if (!cleanEmail && !nickname) return fail(res, new Error('Nickname is required'));
+    if (cleanEmail && (cleanEmail.length > 254 || (!cleanEmail.includes('@') && !isTsBulkTokenAccount(cleanEmail)))) return fail(res, new Error('Invalid account id'));
 
     const d = ensureData();
     if (!Array.isArray(d.tsAccounts)) d.tsAccounts = [];
-    let rec = tsFindAccount(cleanEmail);
+    if (typeof d.tsBulkTokenCounter !== 'number') d.tsBulkTokenCounter = 0;
+    let rec = cleanEmail ? tsFindAccount(cleanEmail) : null;
     const existingCreds = rec ? tsDecryptAccount(rec) : null;
     const existingPassword = existingCreds?.password || '';
     const existingDirectToken = existingCreds?.directToken || '';
-    const incomingPassword = typeof password === 'string' ? password : '';
-    const incomingDirectToken = typeof directToken === 'string' ? directToken.trim() : '';
     const hasIncomingPassword = incomingPassword.trim().length > 0;
-    // Connecting an existing Discord account can use either a direct user token
-    // or email + password. Credentials are stored locally; this endpoint never
-    // creates a Discord account.
     if (!hasIncomingPassword && !existingPassword.trim() && !incomingDirectToken && !existingDirectToken.trim()) {
-      return fail(res, new Error('Enter a password or a Discord user token to connect this account'));
+      return fail(res, new Error('Paste a Discord user token to connect this nickname'));
     }
     if (!rec) {
-      rec = { email: cleanEmail, password: '', totpSecret: '', directToken: '', addedAt: Date.now() };
+      d.tsBulkTokenCounter += 1;
+      const internalEmail = cleanEmail || `acct-${d.tsBulkTokenCounter}@local`;
+      rec = { email: internalEmail, nickname: nickname || `Account ${d.tsBulkTokenCounter}`, password: '', totpSecret: '', directToken: '', addedAt: Date.now() };
       d.tsAccounts.push(rec);
     }
+    if (nickname) rec.nickname = nickname;
     if (hasIncomingPassword) rec.password = encrypt(incomingPassword);
-    // An empty password never clears the only saved credential. Passwords are
-    // intentionally retained when the user edits only the token or 2FA field.
     if (typeof totpSecret === 'string' && totpSecret) rec.totpSecret = encrypt(totpSecret.replace(/\s+/g, ''));
     else if (totpSecret === '') rec.totpSecret = '';
     rec.nitroPlanMonths = nitroPlanMonths;
@@ -1487,7 +1491,7 @@ const ts = require('./lib/trueStudio');
       rec.directToken = encrypt(normalizedToken);
     } else if (directToken === '') rec.directToken = '';
     writeData(d);
-    ok(res, { account: { email: rec.email, hasPassword: !!rec.password, hasTotp: !!rec.totpSecret, hasDirectToken: !!rec.directToken, addedAt: rec.addedAt, nitroPlanMonths: rec.nitroPlanMonths } });
+    ok(res, { account: { email: rec.email, nickname: rec.nickname || '', displayName: tsAccountDisplayName(rec.email), hasPassword: !!rec.password, hasTotp: !!rec.totpSecret, hasDirectToken: !!rec.directToken, addedAt: rec.addedAt, nitroPlanMonths: rec.nitroPlanMonths } });
   });
 
   // ── Bulk token import — one token per line, auto-numbered tok-N@local ──
@@ -1508,13 +1512,13 @@ const ts = require('./lib/trueStudio');
       const email = `tok-${d.tsBulkTokenCounter}@local`;
       let rec = tsFindAccount(email);
       if (!rec) {
-        rec = { email, password: '', totpSecret: '', directToken: '', addedAt: Date.now() };
+        rec = { email, nickname: `Token ${d.tsBulkTokenCounter}`, password: '', totpSecret: '', directToken: '', addedAt: Date.now() };
         d.tsAccounts.push(rec);
       }
       rec.directToken = encrypt(rawToken);
       rec.nitroPlanMonths = planMonths;
       rec.addedAt = Date.now();
-      added.push({ email, num: d.tsBulkTokenCounter, nitroPlanMonths: planMonths });
+      added.push({ email, nickname: rec.nickname, num: d.tsBulkTokenCounter, nitroPlanMonths: planMonths });
     }
     writeData(d);
     ok(res, { added, count: added.length });
@@ -2231,6 +2235,7 @@ const ts = require('./lib/trueStudio');
   // into _req, so manual challenges use the same modal as bot operations.
   app.post('/api/ts/join-server', async (req, res) => {
     try {
+      await runExclusiveTsOperation('إدخال السيرفر', async () => {
       const email = String(req.body?.email || '').trim().toLowerCase();
       if (!email) return fail(res, new Error('email required'));
       const inviteCode = parseDiscordInvite(req.body?.inviteUrl || req.body?.inviteCode);
@@ -2264,11 +2269,32 @@ const ts = require('./lib/trueStudio');
         tsLog(verified ? 'info' : 'warn', `إدخال السيرفر: ${result.message}`, { operation: 'join-server', confirmed: verified, stage: verified ? 'verified' : 'accepted_unverified', account: email, guild: guild?.id || null });
       }, { label: 'Join Discord server' });
       ok(res, result || { joined: false, verified: false, inviteCode });
+      });
     } catch (e) {
       tsLog('error', `إدخال السيرفر: فشل العملية — ${e.message || String(e)}`, { operation: 'join-server', confirmed: false, stage: 'failed', account: String(req.body?.email || '').trim().toLowerCase() || null });
       fail(res, e);
     }
   });
+
+
+  const _tsActiveOperations = new Map();
+  async function runExclusiveTsOperation(kind, fn) {
+    const uid = currentUserId();
+    const current = _tsActiveOperations.get(uid);
+    if (current) {
+      const err = new Error(`عملية ${current.kind} شغالة الآن — انتظر انتهاءها قبل بدء عملية جديدة`);
+      err.code = 'TS_OPERATION_RUNNING';
+      throw err;
+    }
+    _tsActiveOperations.set(uid, { kind, startedAt: Date.now() });
+    try {
+      tsLog('info', `قفل العمليات: بدء ${kind}`, { operation: 'operation_guard', confirmed: false, stage: 'locked' });
+      return await fn();
+    } finally {
+      _tsActiveOperations.delete(uid);
+      tsLog('info', `قفل العمليات: انتهت ${kind}`, { operation: 'operation_guard', confirmed: true, stage: 'released' });
+    }
+  }
 
   function normalizeNitroIso(value) {
     if (!value) return null;
@@ -2571,7 +2597,6 @@ const ts = require('./lib/trueStudio');
           let status = 'ready';
           let reason = 'جاهز لتغيير السيرفر';
           if (!sourceGuilds.length) { status = 'no_boost'; reason = 'مستبعد: لا يوجد بوست مفعل على السيرفر المصدر؛ استخدم وضع بوست جديد إذا كانت slots متاحة'; }
-          else if (!sourceGuildId && transferableSourceIds.length > 1) { status = 'source_required'; reason = 'مستبعد: اختر السيرفر المصدر لأن أكثر من سيرفر لديه Boost قابل للنقل'; }
           else if (slots.length < count) {
             status = state.cooldown?.active || futureSlotCooldown ? 'cooldown' : 'missing_slots';
             reason = futureSlotCooldown
@@ -2635,8 +2660,7 @@ const ts = require('./lib/trueStudio');
           const transferableSourceIds = [...new Set((state.slots || [])
             .filter(slot => slot.applied && slot.subscriptionId && slot.guildId && (!slot.cooldownEndsAt || Date.parse(slot.cooldownEndsAt) <= Date.now()))
             .map(slot => String(slot.guildId)))];
-          if (!sourceGuildId && transferableSourceIds.length > 1) throw new Error('حدد السيرفر المصدر عندما توجد Boostات قابلة للنقل على أكثر من سيرفر');
-          const source = sourceGuildId || transferableSourceIds[0] || state.boostedGuilds?.[0]?.id;
+          const source = sourceGuildId || transferableSourceIds.find(guildId => getTsMoveSlots(state, guildId, count).length >= count) || transferableSourceIds[0] || state.boostedGuilds?.[0]?.id;
           let target = targetGuildId;
           if (!target && inviteUrl) {
             const invite = await withTsRateRetry(`${accountLabel} Join move target`, () => enqueueTsAccount(email, () => ts.acceptInvite({ token, inviteCode: parseDiscordInvite(inviteUrl), netOpts }), { label: 'Join move target' }), { attempts: 2, minWaitMs: 1000 });
@@ -2852,8 +2876,10 @@ const ts = require('./lib/trueStudio');
     const email = String(req.body?.email || '').trim().toLowerCase();
     if (!email) return fail(res, new Error('email required'));
     try {
+      await runExclusiveTsOperation('ضرب البوست', async () => {
       const result = await executeTsNitroPost(email, req.body);
       ok(res, { success: true, ...result });
+      });
     } catch (e) {
       tsLog('error', `[Nitro][${email}][failed] فشل وضع البوست — ${e.message || String(e)}`, { operation: 'nitro_post', confirmed: false, stage: 'failed', account: email });
       fail(res, e);
@@ -2868,6 +2894,7 @@ const ts = require('./lib/trueStudio');
     if (!emails.length) return fail(res, new Error('لا توجد حسابات صالحة لوضع البوستات'));
 
     try {
+      await runExclusiveTsOperation('ضرب البوست', async () => {
       tsLog('info', `Nitro: بدء وضع البوستات بالتوازي على ${emails.length} حساب`, { operation: 'nitro_post_bulk', confirmed: false, stage: 'started', accounts: emails.length });
       const results = await runTsNitroPostBatch(emails, req.body);
       const successful = results.filter(result => result?.ok === true).length;
@@ -2884,6 +2911,7 @@ const ts = require('./lib/trueStudio');
         failed: emails.length - successful,
         rateLimited,
         results,
+      });
       });
     } catch (e) {
       tsLog('error', `Nitro: فشلت العملية الجماعية — ${e.message || String(e)}`, { operation: 'nitro_post_bulk', confirmed: false, stage: 'failed' });
