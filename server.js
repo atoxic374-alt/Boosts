@@ -1448,6 +1448,7 @@ const ts = require('./lib/trueStudio');
 
   app.post('/api/ts/accounts', (req, res) => {
     const { email, password, totpSecret, directToken } = req.body || {};
+    const nitroPlanMonths = Math.max(1, Math.min(36, Math.floor(Number(req.body?.nitroPlanMonths) || Number(req.body?.months) || 1)));
     if (!email || typeof email !== 'string') return fail(res, new Error('Email is required'));
     const cleanEmail = email.trim().toLowerCase();
     if (cleanEmail.length > 254 || !cleanEmail.includes('@')) return fail(res, new Error('Invalid email'));
@@ -1479,13 +1480,14 @@ const ts = require('./lib/trueStudio');
     // intentionally retained when the user edits only the token or 2FA field.
     if (typeof totpSecret === 'string' && totpSecret) rec.totpSecret = encrypt(totpSecret.replace(/\s+/g, ''));
     else if (totpSecret === '') rec.totpSecret = '';
+    rec.nitroPlanMonths = nitroPlanMonths;
     if (typeof directToken === 'string' && directToken.trim()) {
       const normalizedToken = normalizeTsUserToken(directToken);
       if (normalizedToken.length < 20) return fail(res, new Error('Token is too short — paste the complete Discord user token'));
       rec.directToken = encrypt(normalizedToken);
     } else if (directToken === '') rec.directToken = '';
     writeData(d);
-    ok(res, { account: { email: rec.email, hasPassword: !!rec.password, hasTotp: !!rec.totpSecret, hasDirectToken: !!rec.directToken, addedAt: rec.addedAt } });
+    ok(res, { account: { email: rec.email, hasPassword: !!rec.password, hasTotp: !!rec.totpSecret, hasDirectToken: !!rec.directToken, addedAt: rec.addedAt, nitroPlanMonths: rec.nitroPlanMonths } });
   });
 
   // ── Bulk token import — one token per line, auto-numbered tok-N@local ──
@@ -2340,6 +2342,48 @@ const ts = require('./lib/trueStudio');
     };
   }
 
+  function mostRestrictiveNitroState(primary, confirmation) {
+    if (!confirmation) return primary;
+    const primaryCooldownAt = primary?.cooldown?.active ? primary.cooldown.endsAt : primary?.nextSlotCooldownAt;
+    const confirmCooldownAt = confirmation?.cooldown?.active ? confirmation.cooldown.endsAt : confirmation?.nextSlotCooldownAt;
+    const futureCooldowns = [primaryCooldownAt, confirmCooldownAt]
+      .filter(value => value && Date.parse(value) > Date.now())
+      .sort((a, b) => Date.parse(a) - Date.parse(b));
+    const primaryAvailable = Array.isArray(primary?.availableSlotIds) ? primary.availableSlotIds : [];
+    const confirmAvailable = Array.isArray(confirmation?.availableSlotIds) ? confirmation.availableSlotIds : [];
+    const primaryTransfer = Array.isArray(primary?.transferableSlotIds) ? primary.transferableSlotIds : [];
+    const confirmTransfer = Array.isArray(confirmation?.transferableSlotIds) ? confirmation.transferableSlotIds : [];
+    const availableSet = new Set(confirmAvailable);
+    const transferSet = new Set(confirmTransfer);
+    return {
+      ...primary,
+      verification: {
+        confirmedAt: new Date().toISOString(),
+        reads: 2,
+        matchedAvailableSlots: primaryAvailable.filter(id => availableSet.has(id)).length,
+        matchedTransferableSlots: primaryTransfer.filter(id => transferSet.has(id)).length,
+      },
+      cooldown: confirmation.cooldown?.active ? confirmation.cooldown : primary.cooldown,
+      nextSlotCooldownAt: futureCooldowns[0] || primary.nextSlotCooldownAt || confirmation.nextSlotCooldownAt || null,
+      availableSlotIds: primaryAvailable.filter(id => availableSet.has(id)),
+      transferableSlotIds: primaryTransfer.filter(id => transferSet.has(id)),
+    };
+  }
+
+  async function readTsNitroStateVerified({ token, client, rateLimiter, captchaContext = 'nitro-status', confirmDelayMs = 1200 }) {
+    const primary = await readTsNitroState({ token, client, rateLimiter, captchaContext });
+    if (confirmDelayMs > 0) await new Promise(resolve => setTimeout(resolve, confirmDelayMs));
+    try {
+      const confirmation = await readTsNitroState({ token, client, rateLimiter, captchaContext: `${captchaContext}-confirm` });
+      return mostRestrictiveNitroState(primary, confirmation);
+    } catch (e) {
+      tsLog('warn', `Nitro: تعذر تأكيد القراءة الثانية؛ تم استخدام القراءة الأولى بحذر — ${e.message || String(e)}`, {
+        operation: 'nitro_status', confirmed: false, stage: 'confirm_read_failed',
+      });
+      return primary;
+    }
+  }
+
   app.get('/api/ts/nitro/status', async (req, res) => {
     const email = String(req.query.email || '').trim().toLowerCase();
     if (!email) return fail(res, new Error('email required'));
@@ -2347,7 +2391,7 @@ const ts = require('./lib/trueStudio');
       tsLog('info', `Nitro: قراءة البوستات والكول داون من الحساب ${email}…`, { operation: 'nitro_status', confirmed: false, stage: 'read', account: email });
       const { token, client } = await tsGetToken(email);
       const rateLimiter = makeTsRateLimiter('nitro-status', null, { minimumGapMs: 900, account: email });
-      const state = await enqueueTsAccount(email, () => readTsNitroState({ token, client, rateLimiter }), { label: 'Read Nitro status' });
+      const state = await enqueueTsAccount(email, () => readTsNitroStateVerified({ token, client, rateLimiter }), { label: 'Read Nitro status' });
       persistTsNitroState(email, state);
       tsLog('info', `Nitro: الحالة — ${state.availableSlotIds.length} slot للبوست الجديد، ${state.transferableSlotIds.length} Boost قابل للنقل، cooldown عام ${state.cooldown.endsAt || 'غير موجود'}`, { operation: 'nitro_status', confirmed: true, stage: 'complete', account: email, cooldownSource: state.cooldown.source, discordCode: state.cooldown.discordCode || null, availableSlots: state.availableSlotIds.length, transferableSlots: state.transferableSlotIds.length });
       if (state.cooldown.source === 'discord-no-active-cooldown') {
@@ -2401,7 +2445,7 @@ const ts = require('./lib/trueStudio');
             error.rateLimit = health?.rateLimit || null;
             throw error;
           }
-          const state = await withTsRateRetry(`${accountLabel} Nitro status`, () => enqueueTsAccount(email, () => readTsNitroState({ token, client, rateLimiter }), { label: 'Nitro preflight status' }), { attempts: 2, minWaitMs: 1000 });
+          const state = await withTsRateRetry(`${accountLabel} Nitro status`, () => enqueueTsAccount(email, () => readTsNitroStateVerified({ token, client, rateLimiter }), { label: 'Nitro preflight status' }), { attempts: 2, minWaitMs: 1000 });
           persistTsNitroState(email, state);
           const futureCooldown = state.nextSlotCooldownAt && Date.parse(state.nextSlotCooldownAt) > Date.now() ? state.nextSlotCooldownAt : null;
           const activeBoosts = Array.isArray(state.boostedGuilds) ? state.boostedGuilds : [];
@@ -2514,7 +2558,7 @@ const ts = require('./lib/trueStudio');
           }, { minimumGapMs: 900, account: email });
           const health = await withTsRateRetry(`${accountLabel} health`, () => enqueueTsAccount(email, () => ts.accountHealthProbe({ token, netOpts: { client, rateLimiter, solveCaptcha: buildSolveCaptcha({ require2Captcha: true }), captchaContext: 'nitro-move-health' } }), { label: 'Nitro move health' }), { attempts: 2, minWaitMs: 1000 });
           if (!health?.ready) { const error = new Error(health?.message || 'الحساب غير صالح'); error.code = health?.classification || 'ACCOUNT_NOT_READY'; throw error; }
-          const state = await withTsRateRetry(`${accountLabel} Nitro status`, () => enqueueTsAccount(email, () => readTsNitroState({ token, client, rateLimiter }), { label: 'Nitro move status' }), { attempts: 2, minWaitMs: 1000 });
+          const state = await withTsRateRetry(`${accountLabel} Nitro status`, () => enqueueTsAccount(email, () => readTsNitroStateVerified({ token, client, rateLimiter }), { label: 'Nitro move status' }), { attempts: 2, minWaitMs: 1000 });
           persistTsNitroState(email, state);
           const transferableSourceIds = [...new Set((state.slots || [])
             .filter(slot => slot.applied && slot.subscriptionId && slot.guildId && (!slot.cooldownEndsAt || Date.parse(slot.cooldownEndsAt) <= Date.now()))
@@ -2586,7 +2630,7 @@ const ts = require('./lib/trueStudio');
           const netOpts = { client, rateLimiter, solveCaptcha: buildSolveCaptcha({ require2Captcha: true }), captchaContext: 'nitro-move' };
           const health = await withTsRateRetry(`${accountLabel} health`, () => enqueueTsAccount(email, () => ts.accountHealthProbe({ token, netOpts }), { label: 'Nitro move health' }), { attempts: 2, minWaitMs: 1000 });
           if (!health?.ready) throw new Error(health?.message || 'الحساب غير صالح');
-          let state = await withTsRateRetry(`${accountLabel} source status`, () => enqueueTsAccount(email, () => readTsNitroState({ token, client, rateLimiter }), { label: 'Nitro move source status' }), { attempts: 2, minWaitMs: 1000 });
+          let state = await withTsRateRetry(`${accountLabel} source status`, () => enqueueTsAccount(email, () => readTsNitroStateVerified({ token, client, rateLimiter }), { label: 'Nitro move source status' }), { attempts: 2, minWaitMs: 1000 });
           persistTsNitroState(email, state);
           const transferableSourceIds = [...new Set((state.slots || [])
             .filter(slot => slot.applied && slot.subscriptionId && slot.guildId && (!slot.cooldownEndsAt || Date.parse(slot.cooldownEndsAt) <= Date.now()))
@@ -2597,7 +2641,7 @@ const ts = require('./lib/trueStudio');
           if (!target && inviteUrl) {
             const invite = await withTsRateRetry(`${accountLabel} Join move target`, () => enqueueTsAccount(email, () => ts.acceptInvite({ token, inviteCode: parseDiscordInvite(inviteUrl), netOpts }), { label: 'Join move target' }), { attempts: 2, minWaitMs: 1000 });
             target = String(invite?.guild?.id || invite?.guild_id || '').trim();
-            state = await withTsRateRetry(`${accountLabel} target refresh`, () => enqueueTsAccount(email, () => readTsNitroState({ token, client, rateLimiter }), { label: 'Nitro move target refresh' }), { attempts: 2, minWaitMs: 1000 });
+            state = await withTsRateRetry(`${accountLabel} target refresh`, () => enqueueTsAccount(email, () => readTsNitroStateVerified({ token, client, rateLimiter }), { label: 'Nitro move target refresh' }), { attempts: 2, minWaitMs: 1000 });
           }
           const targetGuild = state.guilds.find(g => String(g.id) === String(target));
           if (!targetGuild) throw new Error('الحساب ليس عضوًا في السيرفر الهدف');
@@ -2609,7 +2653,7 @@ const ts = require('./lib/trueStudio');
             await withTsRateRetry(`${accountLabel} release boost`, () => enqueueTsAccount(email, () => ts.deletePremiumGuildSubscription({ token, guildId: slot.guildId, subscriptionId: slot.subscriptionId, netOpts }), { label: 'Release Nitro boost' }), { attempts: 2, minWaitMs: 1000 });
             released++;
           }
-          state = await withTsRateRetry(`${accountLabel} released status`, () => enqueueTsAccount(email, () => readTsNitroState({ token, client, rateLimiter }), { label: 'Nitro move released status' }), { attempts: 2, minWaitMs: 1000 });
+          state = await withTsRateRetry(`${accountLabel} released status`, () => enqueueTsAccount(email, () => readTsNitroStateVerified({ token, client, rateLimiter }), { label: 'Nitro move released status' }), { attempts: 2, minWaitMs: 1000 });
           const releasedSlotIds = new Set(moveSlots.map(slot => String(slot.id || '').trim()).filter(Boolean));
           const availableSlotIds = (Array.isArray(state.availableSlotIds) ? state.availableSlotIds : [])
             .map(slotId => String(slotId || '').trim())
@@ -2618,7 +2662,7 @@ const ts = require('./lib/trueStudio');
           if (availableSlotIds.length < count) throw new Error('تم فك البوست لكن Discord لم يُعد نفس slots المتاحة بعد؛ لا تعاد المحاولة قبل تحديث الحالة');
           log('info', 'apply', `تطبيق ${count} بوست على ${targetGuild.name}`);
           await withTsRateRetry(`${accountLabel} apply moved boosts`, () => enqueueTsAccount(email, () => ts.applyPremiumGuildSubscriptions({ token, guildId: target, slotIds: availableSlotIds, netOpts }), { label: 'Apply moved Nitro boosts' }), { attempts: 2, minWaitMs: 1000 });
-          const after = await withTsRateRetry(`${accountLabel} verify moved boosts`, () => enqueueTsAccount(email, () => readTsNitroState({ token, client, rateLimiter }), { label: 'Verify moved Nitro boosts' }), { attempts: 2, minWaitMs: 1000 });
+          const after = await withTsRateRetry(`${accountLabel} verify moved boosts`, () => enqueueTsAccount(email, () => readTsNitroStateVerified({ token, client, rateLimiter }), { label: 'Verify moved Nitro boosts' }), { attempts: 2, minWaitMs: 1000 });
           persistTsNitroState(email, after);
           const verifiedCount = (after.slots || []).filter(slot => slot.applied && String(slot.guildId) === String(target)).length;
           if (verifiedCount < count) throw new Error(`تم إرسال التغيير لكن التحقق وجد ${verifiedCount}/${count} بوست فقط`);
@@ -2659,7 +2703,7 @@ const ts = require('./lib/trueStudio');
       if (type === 'rate_limit_resume') nitroLog('info', 'rate_limit_resume', 'انتهى الانتظار واستئناف الحساب');
     }, { minimumGapMs: 900, account: accountEmail });
     const readState = async (label) => {
-      const value = await withTsRateRetry(`${accountLabel} ${label}`, () => enqueueTsAccount(accountEmail, () => readTsNitroState({ token, client, rateLimiter }), { label }), { attempts: 2, minWaitMs: 1000 });
+      const value = await withTsRateRetry(`${accountLabel} ${label}`, () => enqueueTsAccount(accountEmail, () => readTsNitroStateVerified({ token, client, rateLimiter }), { label }), { attempts: 2, minWaitMs: 1000 });
       persistTsNitroState(accountEmail, value);
       return value;
     };
